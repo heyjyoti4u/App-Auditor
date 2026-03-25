@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overall App Impact Report</title>
+    <link rel="stylesheet" href="server.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div id="particles-js"></div>
+
+    <div class="dashboard-layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <i class="fas fa-shield-alt logo-icon"></i> <span>App Auditor</span>
+            </div>
+            <nav class="sidebar-nav">
+                <ul>
+                    <li class="active"><a href="global-app-report.html" id="globalAppReportLink"><i class="fas fa-chart-bar"></i> Detailed App Summary</a></li>
+                    <li><a href="global-performance-report.html" id="globalPerformanceReportLink"><i class="fas fa-chart-bar"></i> Detailed Performance Summary</a></li>
+                    
+                    <li><a href="server.html"><i class="fas fa-tachometer-alt"></i> Back to Dashboard</a></li>
+                    <li><a href="#"><i class="fas fa-history"></i> History</a></li>
+                    <li><a href="#"><i class="fas fa-cog"></i> Settings</a></li>
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                <a href="#"><i class="fas fa-question-circle"></i> Help</a>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <div class="content-wrapper">
+                <header class="main-header">
+                    <h1>Global App Impact & Comparison</h1>
+                </header>
+
+                <section id="overall-stats-container" class="content-area">
+                </section>
+
+                <section id="ghost-code-container" class="content-area card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-ghost"></i> Ghost Code Report</h2>
+                        <p>Scan your theme files for leftover code from uninstalled apps.</p>
+                    </div>
+                    <div class="card-body">
+                        <button id="scan-ghost-code-btn" class="primary-button animated-button">
+                            <i class="fas fa-search"></i> Start Ghost Code Scan
+                        </button>
+                        <div id="ghost-loading" class="spinner" style="display: none; margin-top: 20px;"></div>
+                        <pre id="ghost-log" class="log-box" style="display: none; margin-top: 20px;"></pre>
+                    </div>
+                </section>
+                <section id="top-offenders-container" class="content-area" style="margin-bottom: 20px;">
+                </section>
+                
+                <div id="sort-controls-container">
+                    <span>Sort By:</span>
+                    <div class="sort-buttons">
+                        <button class="sort-button active" data-sort="impact">Impact</button>
+                        <button class="sort-button" data-sort="size">Total Size (KB)</button>
+                        <button class="sort-button" data-sort="duration">Load Duration (ms)</button>
+                        <button class="sort-button" data-sort="tbt">Est. TBT Impact (ms)</button>
+                    </div>
+                </div>
+
+                <section class="content-area" id="report-container">
+                </section>
+
+                <div id="no-data-placeholder" class="card" style="padding: 40px; text-align: center; margin: 30px; display: none;">
+                    <i class="fas fa-exclamation-circle" style="font-size: 2em; color: var(--error-color); margin-bottom: 15px;"></i>
+                    <h3 style="margin-bottom: 10px;">No Recent Scan Data Available</h3>
+                    <p>Please run a full store audit on the main Dashboard page to generate this report.</p>
+                    <a href="server.html" class="primary-button animated-button" style="margin-top: 20px; display: inline-block;">
+                        <i class="fas fa-arrow-left"></i> Go to Dashboard
+                    </a>
+                </div>
+
+            </div>
+        </main>
+    </div>
+    <script src="client.js"></script>
+
+
+
+</body>
+</html>
