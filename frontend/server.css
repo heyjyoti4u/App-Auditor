@@ -1225,11 +1225,11 @@ input:checked + .slider:before {
 
 /* Value with numeric pop animation */
 .metric-card .metric-value {
-    font-size: 1.8em;
-    font-weight: 800;
-    margin-bottom: 6px;
-    color: var(--text-color);
-    transition: transform 0.3s ease, color 0.3s ease;
+    font-size: 1.6em !important;   /* Force the font size to be large */
+    font-weight: 700 !important;
+    height: auto !important;      /* Remove any fixed bar height */
+    width: auto !important;       /* Remove any fixed bar width */
+    background: none !important;  /* Remove the bar background color */
 }
 
 .metric-card:hover .metric-value {
@@ -4302,3 +4302,15 @@ pre#log-output {
 }
 
 
+/* Fix for the red/yellow box-shadows inside Metric Cards */
+.metric-card .metric-value.good,
+.metric-card .metric-value.average,
+.metric-card .metric-value.poor {
+    box-shadow: none !important;
+    background: transparent !important;
+    border: none !important;
+}
+
+.metric-card .metric-value.poor { color: var(--error-color) !important; }
+.metric-card .metric-value.average { color: var(--warning-color) !important; }
+.metric-card .metric-value.good { color: var(--success-color) !important; }
