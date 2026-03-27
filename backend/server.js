@@ -443,6 +443,92 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend', 'server.html')); 
 });
 
+// ---------------------------------------------------------------
+// (NEW) ADMIN API APP DETECTION & SEGREGATION ENDPOINT
+// ---------------------------------------------------------------
+app.get('/api-app-scan', async (req, res) => {
+    try {
+        if (!adminToken || !storeUrl) {
+            return res.status(400).json({ error: 'SHOPIFY_ADMIN_TOKEN or SHOPIFY_STORE_URL missing in .env' });
+        }
+
+        const query = `
+        {
+          appInstallations(first: 50) {
+            edges {
+              node {
+                app {
+                  title
+                  developerName
+                }
+              }
+            }
+          }
+        }`;
+
+        // GraphQL API Call using axios already imported in your file
+        const response = await axios({
+            url: `https://${storeUrl}/admin/api/2024-01/graphql.json`, 
+            method: 'POST',
+            headers: {
+                'X-Shopify-Access-Token': adminToken,
+                'Content-Type': 'application/json',
+            },
+            data: JSON.stringify({ query })
+        });
+
+        const installedApps = response.data.data.appInstallations.edges.map(edge => edge.node.app.title);
+
+        // Standard Shopify Categories setup
+        let report = {
+            total_installed: installedApps.length,
+            categories: {
+                "Marketing": { count: 0, apps: [] },
+                "Store Design": { count: 0, apps: [] },
+                "Sales & Conversion": { count: 0, apps: [] },
+                "Orders & Shipping": { count: 0, apps: [] },
+                "Customer Support": { count: 0, apps: [] },
+                "Store Management": { count: 0, apps: [] }
+            },
+            uncategorized: []
+        };
+
+        // Smart Segregation Logic
+        installedApps.forEach(appName => {
+            let foundCategory = null;
+            
+            // FINGERPRINT_DB tumhare server.js mein already upar load ho raha hai
+            for (const [dbAppName, dbAppData] of Object.entries(FINGERPRINT_DB)) {
+                // Agar API ka naam aur database ka naam thoda bhi match hota hai
+                if (appName.toLowerCase().includes(dbAppName.toLowerCase()) || dbAppName.toLowerCase().includes(appName.toLowerCase())) {
+                    foundCategory = dbAppData.category;
+                    break;
+                }
+            }
+
+            if (foundCategory) {
+                // Agar json me category di hai aur wo exist karti hai
+                if (!report.categories[foundCategory]) {
+                    report.categories[foundCategory] = { count: 0, apps: [] };
+                }
+                report.categories[foundCategory].count += 1;
+                report.categories[foundCategory].apps.push(appName);
+            } else {
+                // Agar match nahi hua ya json me nahi hai, toh seedha uncategorized mein daalo
+                report.uncategorized.push(appName);
+            }
+        });
+
+        // Frontend ko direct categorized data bhej diya
+        res.json(report);
+
+    } catch (error) {
+        console.error('[API Scan Error]', error.response ? error.response.data : error.message);
+        res.status(500).json({ error: 'Failed to fetch and segregate apps' });
+    }
+});
+
+
 app.listen(port, () => {
     console.log(`[Server] App Auditor UI running at http://localhost:${port}`);
 });
