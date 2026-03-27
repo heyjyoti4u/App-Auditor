@@ -4314,3 +4314,245 @@ pre#log-output {
 .metric-card .metric-value.poor { color: var(--error-color) !important; }
 .metric-card .metric-value.average { color: var(--warning-color) !important; }
 .metric-card .metric-value.good { color: var(--success-color) !important; }
+
+
+This is the plan. Writing the full code now.
+No citations are strictly necessary here as I'm providing code modifications based on the user's request, not referencing facts from the files as truths to support a claim, but rather rewriting them. I will cite the file names if I mention them explicitly as the source of the current logic.
+Actually, let's keep it simple and just provide the diffs.
+
+I will craft the response now.
+I will ensure the CSS looks exactly like a clean, white, modern dashboard (light borders, flexbox alignment, clear typography).
+
+```css
+/* --- Categorized App Report Styles --- */
+.category-group {
+    background: var(--card-background);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 24px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    overflow: hidden;
+}
+
+.category-group-header {
+    background: #f8fafc;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.category-group-header h3 {
+    margin: 0;
+    font-size: 1.1em;
+    font-weight: 600;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.category-meta {
+    font-size: 0.9em;
+    color: var(--muted-text-color);
+    font-weight: 500;
+}
+
+.category-app-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.compact-app-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr auto;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #f1f5f9;
+    gap: 16px;
+    transition: background 0.2s ease;
+}
+
+.compact-app-row:last-child {
+    border-bottom: none;
+}
+
+.compact-app-row:hover {
+    background: #fcfcfc;
+}
+
+.app-info-col {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.app-info-col h4 {
+    margin: 0 0 4px 0;
+    font-size: 1em;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.app-info-col p {
+    margin: 0;
+    font-size: 0.85em;
+    color: var(--muted-text-color);
+    line-height: 1.3;
+}
+
+.metric-col {
+    display: flex;
+    flex-direction: column;
+}
+
+.metric-label {
+    font-size: 0.75em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.metric-value {
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #334155;
+    font-family: 'Fira Code', monospace;
+}
+
+/* Redefine badges for this view */
+.badge-critical { background: #fee2e2; color: #ef4444; border: 1px solid #f87171; }
+.badge-medium { background: #fef3c7; color: #f59e0b; border: 1px solid #fbbf24; }
+.badge-low { background: #dcfce7; color: #10b981; border: 1px solid #34d399; }
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.75em;
+    font-weight: 700;
+    text-transform: uppercase;
+    text-align: center;
+    white-space: nowrap;
+}
+ 
+
+
+
+
+
+
+.category-group {
+    background: var(--card-background);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 24px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    overflow: hidden;
+}
+
+.category-group-header {
+    background: #f8fafc;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.category-group-header h3 {
+    margin: 0;
+    font-size: 1.1em;
+    font-weight: 600;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.category-meta {
+    font-size: 0.9em;
+    color: var(--muted-text-color);
+    font-weight: 500;
+}
+
+.category-app-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.compact-app-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr auto;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #f1f5f9;
+    gap: 16px;
+    transition: background 0.2s ease;
+}
+
+.compact-app-row:last-child {
+    border-bottom: none;
+}
+
+.compact-app-row:hover {
+    background: #fcfcfc;
+}
+
+.app-info-col {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.app-info-col h4 {
+    margin: 0 0 4px 0;
+    font-size: 1em;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.app-info-col p {
+    margin: 0;
+    font-size: 0.85em;
+    color: var(--muted-text-color);
+    line-height: 1.3;
+}
+
+.metric-col {
+    display: flex;
+    flex-direction: column;
+}
+
+.metric-label {
+    font-size: 0.75em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.metric-value {
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #334155;
+    font-family: 'Fira Code', monospace;
+}
+
+/* Redefine badges for this view */
+.badge-critical { background: #fee2e2; color: #ef4444; border: 1px solid #f87171; }
+.badge-medium { background: #fef3c7; color: #f59e0b; border: 1px solid #fbbf24; }
+.badge-low { background: #dcfce7; color: #10b981; border: 1px solid #34d399; }
+
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.75em;
+    font-weight: 700;
+    text-transform: uppercase;
+    text-align: center;
+    white-space: nowrap;
+}
