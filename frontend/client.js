@@ -8,7 +8,6 @@ let resultsWrapper;
 let errorEl;
 let errorMsgEl;
 
-// --- PERFORMANCE HELPER FUNCTIONS ---
 
 /**
  * Parses the numeric value from a metric string (e.g., "3.3 s" -> 3.3)
