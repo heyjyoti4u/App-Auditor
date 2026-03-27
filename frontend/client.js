@@ -107,46 +107,69 @@ function renderGlobalAppReport() {
 
     const { appReport } = JSON.parse(dataString);
 
-    // Ye condition match hogi tabhi apps dikhenge
     if (appReport && appReport.executiveSummary && appReport.appBreakdown) {
         noDataEl.style.display = 'none';
 
         const exec = appReport.executiveSummary;
+
+        // ✅ STATS + INSIGHTS
         const statsHtml = `
-            <div class="overall-stats-grid">
-                <div class="stat-card">
-                    <h4>Total Frontend Apps</h4>
-                    <span class="stat-value">${exec.totalAppsDetected}</span>
-                </div>
-                <div class="stat-card">
-                    <h4>Total 3rd-Party Size</h4>
-                    <span class="stat-value">${exec.totalAppSizeMb} MB</span>
-                </div>
+        <div class="overall-stats-grid">
+            <div class="stat-card"><h4>Total Apps</h4><span>${exec.totalAppsDetected}</span></div>
+            <div class="stat-card"><h4>Total Size</h4><span>${exec.totalAppSizeMb} MB</span></div>
+            <div class="stat-card"><h4>Total Requests</h4><span>${exec.totalRequests || '-'}</span></div>
+            <div class="stat-card">
+                <h4>Performance Score</h4>
+                <span class="${getScoreRating(exec.performanceScore || 0)}">
+                    ${exec.performanceScore || 'N/A'}
+                </span>
             </div>
+        </div>
+
+        <div class="insights-card">
+            <h3>Key Insights</h3>
+            <ul>
+                ${exec.highImpactApps > 0 ? `<li>🚨 ${exec.highImpactApps} high impact apps slowing your store</li>` : ''}
+                ${exec.totalRequests > 80 ? `<li>⚠️ Too many requests (${exec.totalRequests}) affecting load time</li>` : ''}
+                ${exec.totalAppSizeMb > 1 ? `<li>⚠️ Heavy app footprint (${exec.totalAppSizeMb} MB)</li>` : ''}
+                ${exec.performanceScore < 50 ? `<li>🚨 Poor performance score — immediate optimization needed</li>` : ''}
+                ${exec.performanceScore >= 80 ? `<li>✅ Store performance looks healthy</li>` : ''}
+            </ul>
+        </div>
         `;
+
         statsContainer.innerHTML = statsHtml;
 
+        // ✅ TOP OFFENDERS
         const culprits = appReport.topCulprits || [];
+
         if (culprits.length > 0) {
-            let culpritsHtml = '<ol class="heavy-assets-list" style="margin: 0; padding-left: 20px;">';
+            let culpritsHtml = '';
+
             culprits.forEach(app => {
                 culpritsHtml += `
-                    <li style="margin-bottom: 10px;">
-                        <span class="offender-name" style="font-weight: 600; font-size: 1.1em;">
-                            ${app.icon ? `<img src="${app.icon}" class="app-icon-small" style="vertical-align:middle;margin-right:8px;border-radius:4px;width:24px;height:24px;">` : ''}
-                            ${app.name}
-                        </span>
-                        <div style="margin-top: 5px; color: var(--error-color);">
-                            Added Weight: ${app.totalSizeKb} KB | Delay: ${app.totalDurationMs} ms
+                    <div class="culprit-card">
+                        <div class="culprit-left">
+                            ${app.icon ? `<img src="${app.icon}" class="app-icon-small">` : ''}
+                            <div>
+                                <strong>${app.name}</strong>
+                                <p>${app.totalSizeKb} KB • ${app.totalDurationMs} ms</p>
+                            </div>
                         </div>
-                        ${app.recommendation ? `<div style="font-size: 0.9em; margin-top: 5px; color: #555;">Tip: ${app.recommendation}</div>` : ''}
-                    </li>`;
+                        <div class="impact-badge impact-critical">HIGH</div>
+                    </div>
+
+                    ${app.recommendation ? `
+                        <div class="fix-tip">
+                            Tip: ${app.recommendation}
+                        </div>
+                    ` : ''}
+                `;
             });
-            culpritsHtml += '</ol>';
 
             offendersContainer.innerHTML = `
-                <div class="card offenders-summary-card" style="border-left: 4px solid var(--error-color);">
-                    <h3 style="color: var(--error-color); margin-bottom: 15px;"> The Culprits (High Impact Apps)</h3>
+                <div class="card offenders-summary-card">
+                    <h3>🔥 High Impact Apps</h3>
                     ${culpritsHtml}
                 </div>
             `;
@@ -154,8 +177,35 @@ function renderGlobalAppReport() {
             offendersContainer.innerHTML = '';
         }
 
-        const appBreakdown = appReport.appBreakdown || [];
-        let html = '';
+        // ✅ TABLE (FIXED)
+        let appBreakdown = appReport.appBreakdown || [];
+        appBreakdown.sort((a,b)=>b.totalSizeKb-a.totalSizeKb);
+        let html = `
+        <div class="card">
+            <div class="card-header">
+                <h2>All Apps Performance</h2>
+            </div>
+
+            <!-- 🔥 SORT BUTTONS -->
+            <div id="sort-controls-container" style="margin:10px;">
+                <button class="sort-button active" data-sort="size">Size</button>
+                <button class="sort-button" data-sort="duration">Load Time</button>
+                <button class="sort-button" data-sort="impact">Impact</button>
+            </div>
+
+            <div class="card-body">
+                <table class="app-table">
+                    <thead>
+                        <tr>
+                            <th>App</th>
+                            <th>Impact</th>
+                            <th>Size</th>
+                            <th>Load Time</th>
+                            <th>Assets</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
 
         appBreakdown.forEach(app => {
             let impactClass = 'impact-low';
@@ -163,42 +213,126 @@ function renderGlobalAppReport() {
             else if (app.impact === 'Medium') impactClass = 'impact-medium';
 
             html += `
-                <div class="card app-card animated-card" style="margin-bottom: 20px; padding-bottom: 20px;">
-                    <div class="impact-badge ${impactClass}">${app.impact} Impact</div>
-                    <div class="app-card-content-wrapper">
-                        <div class="app-card-header">
-                            ${app.icon ? `<img src="${app.icon}" class="app-icon" alt="${app.name}">` : '<span class="app-icon-placeholder"></span>'}
-                            <div class="app-card-title-wrapper">
-                                <h4>${app.name}</h4>
-                            </div>
-                        </div>
-                        <p><strong>Total Assets Loaded:</strong> ${app.assetCount}</p>
-                        <hr style="border-top: 1px solid var(--border-color); margin: 15px 0;">
-                        <div class="app-card-body">
-                            <div class="asset-impact-summary">
-                                <p><strong>Total Resource Size:</strong> <strong>${app.totalSizeKb} KB</strong></p>
-                                <p><strong>Total Load Duration:</strong> <strong>${app.totalDurationMs} ms</strong></p>
-                            </div>
-                        </div>
-                    </div>
-                    ${app.recommendation ? `
-                        <div class="recommendation-box" style="margin-top: 15px;">
-                            <strong>Optimization Tip:</strong>
-                            <p>${app.recommendation}</p>
-                        </div>
-                    ` : ''}
-                </div>
+                <tr class="${app.impact === 'High' ? 'worst-app' : ''}">
+                    <td>
+                        ${app.icon ? `<img src="${app.icon}" style="width:20px;height:20px;">` : ''}
+                        ${app.name}
+                    </td>
+                    <td><span class="${impactClass}">${app.impact}</span></td>
+                    <td>${app.totalSizeKb}</td>
+                    <td>${app.totalDurationMs}</td>
+                    <td>${app.assetCount}</td>
+                </tr>
             `;
         });
 
+        html += `</tbody></table></div></div>`;
+
         container.innerHTML = html;
-        const sortContainer = document.getElementById('sort-controls-container');
-        if (sortContainer) sortContainer.style.display = 'none'; 
+
+        // ✅ SORT LOGIC
+        attachSortListeners(appBreakdown, container);
 
     } else {
         noDataEl.style.display = 'block';
     }
 }
+
+
+// ✅ SORT FUNCTION (ADD IF NOT PRESENT)
+function attachSortListeners(appBreakdown, container) {
+    const buttons = document.querySelectorAll('.sort-button');
+    
+    buttons.forEach(btn => {
+    btn.onclick = () => {
+
+        // 🔥 ADD THIS
+        buttons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const type = btn.dataset.sort;
+        let sorted = [...appBreakdown];
+
+        if (type === 'size') {
+            sorted.sort((a,b)=>b.totalSizeKb-a.totalSizeKb);
+        }
+        if (type === 'duration') {
+            sorted.sort((a,b)=>b.totalDurationMs-a.totalDurationMs);
+        }
+        if (type === 'impact') {
+            const order = { Critical:4, High:3, Medium:2, Low:1 };
+            sorted.sort((a,b)=>order[b.impact]-order[a.impact]);
+        }
+
+        renderGlobalAppReportSorted(sorted);
+    };
+});
+}
+
+
+
+
+
+
+
+
+function renderGlobalAppReportSorted(sortedApps) {
+    const container = document.getElementById('report-container');
+
+    let html = `
+    <div class="card">
+        <div class="card-header">
+            <h2>All Apps Performance</h2>
+        </div>
+
+        <div id="sort-controls-container" style="margin:10px;">
+            <button class="sort-button" data-sort="size">Size</button>
+            <button class="sort-button" data-sort="duration">Load Time</button>
+            <button class="sort-button" data-sort="impact">Impact</button>
+        </div>
+
+        <div class="card-body">
+            <table class="app-table">
+                <thead>
+                    <tr>
+                        <th>App</th>
+                        <th>Impact</th>
+                        <th>Size</th>
+                        <th>Load Time</th>
+                        <th>Assets</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    sortedApps.forEach(app => {
+        html += `
+        <tr class="${app.impact === 'High' ? 'worst-app' : ''}">
+            <td>
+            ${app.icon ? `<img src="${app.icon}" style="width:20px;height:20px;">` : ''}
+            ${app.name}
+            </td>
+            <td>${app.impact}</td>
+            <td>${app.totalSizeKb}</td>
+            <td>${app.totalDurationMs}</td>
+            <td>${app.assetCount}</td>
+        </tr>
+        `;
+    });
+
+    html += `</tbody></table></div></div>`;
+
+    container.innerHTML = html;
+
+    // 🔥 FIX: pass sortedApps again
+    attachSortListeners(sortedApps, container);
+}
+ 
+ 
+
+
+
+
 
 
 
@@ -2216,3 +2350,5 @@ document.addEventListener('DOMContentLoaded', () => {
         renderHistoryPage();
     }
 });
+
+
