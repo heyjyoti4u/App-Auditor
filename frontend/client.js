@@ -88,6 +88,9 @@ const parseTBT = (tbtString) => {
     return parseFloat(tbtString.replace(/[^0-9.]/g, ''));
 };
 
+  
+
+
 function renderGlobalAppReport() {
     const dataString = sessionStorage.getItem('lastScanData');
     const container = document.getElementById('report-container');
@@ -95,272 +98,104 @@ function renderGlobalAppReport() {
     const statsContainer = document.getElementById('overall-stats-container');
     const noDataEl = document.getElementById('no-data-placeholder');
 
-    if (!container || !noDataEl || !offendersContainer || !statsContainer) {
-        console.error("Report containers not found (missing: report-container, no-data-placeholder, top-offenders-container, or overall-stats-container).");
-        return;
-    }
+    if (!container || !noDataEl || !offendersContainer || !statsContainer) return;
 
     if (!dataString || dataString === '{"appReport":null,"perfReport":null}') {
-        console.log("No scan data found in session.");
         noDataEl.style.display = 'block';
         return;
     }
 
-    const { appReport, perfReport } = JSON.parse(dataString);
+    const { appReport } = JSON.parse(dataString);
 
-    if (appReport && appReport.detectedApps && appReport.detectedApps.length > 0) {
-        console.log("App Report Data Found. Rendering...");
+    // Ye condition match hogi tabhi apps dikhenge
+    if (appReport && appReport.executiveSummary && appReport.appBreakdown) {
         noDataEl.style.display = 'none';
 
-        const tbt = perfReport ? perfReport.metrics.tbt : null;
-        const currentTBTms = parseTBT(tbt);
-
-        const impactScores = { 'Critical': 4, 'High': 3, 'Medium': 2, 'Low': 1 };
-        let allAppMetrics = appReport.detectedApps.map(app => {
-            const totalAssets = app.assets ? app.assets.length : 0;
-            const totalSizeKb = app.assets ? app.assets.reduce((sum, a) => sum + (a.sizeKb || 0), 0) : 0;
-            const totalDurationMs = app.assets ? app.assets.reduce((sum, a) => sum + (a.durationMs || 0), 0) : 0;
-            const jsAssets = app.assets.filter(a => a.type === 'JS');
-            const estimatedTBTContribution = jsAssets.reduce((sum, a) => sum + (a.durationMs || 0), 0);
-            const overallImpact = getOverallImpactRating(totalSizeKb, totalDurationMs);
-            const jsRequests = jsAssets.length;
-
-            return {
-                ...app,
-                totalAssets,
-                totalSizeKb,
-                totalDurationMs,
-                estimatedTBTContribution,
-                overallImpact,
-                impactScore: impactScores[overallImpact.text] || 0,
-                jsRequests
-            };
-        });
-
-        const totalApps = allAppMetrics.length;
-        const totalSize = allAppMetrics.reduce((sum, app) => sum + app.totalSizeKb, 0);
-        const totalJSRequests = allAppMetrics.reduce((sum, app) => sum + app.jsRequests, 0);
-
+        const exec = appReport.executiveSummary;
         const statsHtml = `
             <div class="overall-stats-grid">
                 <div class="stat-card">
-                    <h4>Total Apps Found</h4>
-                    <span class="stat-value">${totalApps}</span>
+                    <h4>Total Frontend Apps</h4>
+                    <span class="stat-value">${exec.totalAppsDetected}</span>
                 </div>
                 <div class="stat-card">
                     <h4>Total 3rd-Party Size</h4>
-                    <span class="stat-value">${(totalSize / 1024).toFixed(2)} MB</span>
-                </div>
-                <div class="stat-card">
-                    <h4>Total JS Requests</h4>
-                    <span class="stat-value">${totalJSRequests}</span>
+                    <span class="stat-value">${exec.totalAppSizeMb} MB</span>
                 </div>
             </div>
         `;
         statsContainer.innerHTML = statsHtml;
 
-        const sortedBySize = [...allAppMetrics].sort((a, b) => b.totalSizeKb - a.totalSizeKb).slice(0, 3);
-        const sortedByDuration = [...allAppMetrics].sort((a, b) => b.totalDurationMs - a.totalDurationMs).slice(0, 3);
-        const sortedByTBT = [...allAppMetrics].sort((a, b) => b.estimatedTBTContribution - a.estimatedTBTContribution).slice(0, 3);
-
-        const summaryHtml = `
-            <div class="card offenders-summary-card">
-                <h3><i class="fas fa-exclamation-triangle"></i> Top Offenders Summary</h3>
-                <div class="offenders-grid">
-                    <div class="offender-column">
-                        <h4>Heaviest (Size)</h4>
-                        ${buildOffendersList(sortedBySize, 'totalSizeKb', 'KB')}
-                    </div>
-                    <div class="offender-column">
-                        <h4>Slowest (Load Time)</h4>
-                        ${buildOffendersList(sortedByDuration, 'totalDurationMs', 'ms')}
-                    </div>
-                    <div class="offender-column">
-                        <h4>TBT Impact (JS)</h4>
-                        ${buildOffendersList(sortedByTBT, 'estimatedTBTContribution', 'ms')}
-                    </div>
-                </div>
-            </div>
-        `;
-        offendersContainer.innerHTML = summaryHtml;
-
-        function drawAppCards(appsToDraw) {
-            let html = '';
-            let chartData = [];
-
-            appsToDraw.forEach(app => {
-                const {
-                    totalAssets, totalSizeKb, totalDurationMs, estimatedTBTContribution,
-                    recommendation, icon, name, assets, matchedFingerprints, overallImpact, category
-                } = app;
-
-                const jsAssets = assets.filter(a => a.type === 'JS');
-                const cssAssets = assets.filter(a => a.type === 'CSS');
-                const otherAssets = assets.filter(a => a.type !== 'JS' && a.type !== 'CSS');
-
-                const jsSizeKb = jsAssets.reduce((sum, a) => sum + (a.sizeKb || 0), 0);
-                const cssSizeKb = cssAssets.reduce((sum, a) => sum + (a.sizeKb || 0), 0);
-                const otherSizeKb = otherAssets.reduce((sum, a) => sum + (a.sizeKb || 0), 0);
-
-                const chartId = `app-chart-${name.replace(/[^a-zA-Z0-9]/g, '-')}`;
-                chartData.push({
-                    id: chartId,
-                    data: [jsSizeKb, cssSizeKb, otherSizeKb]
-                });
-
-                let heavyAssetsHtml = '';
-                if (assets && assets.length > 0) {
-                    const sortedAssets = [...assets].sort((a, b) => b.sizeKb - a.sizeKb);
-                    const topAssets = sortedAssets.slice(0, 3);
-
-                    if (topAssets.length > 0 && topAssets[0].sizeKb > 0.01) {
-                        heavyAssetsHtml = `
-                            <div class="heavy-assets-box">
-                                <div class="heavy-assets-header">
-                                    <i class="fas fa-chevron-right"></i>
-                                    <strong>Heaviest Assets (${topAssets.length})</strong>
-                                </div>
-                                <div class="heavy-assets-content">
-                                    <ul class="heavy-assets-list">
-                                        ${topAssets.map(asset => `
-                                            <li>
-                                                <span title="${asset.url}">${asset.url.substring(asset.url.lastIndexOf('/') + 1)}</span>
-                                                <strong>${asset.sizeKb.toFixed(2)} KB</strong>
-                                            </li>
-                                        `).join('')}
-                                    </ul>
-                                </div>
-                            </div>
-                        `;
-                    }
-                }
-
-                const durationRating = getDurationRating(totalDurationMs);
-                const sizeRating = getSizeRating(totalSizeKb);
-
-                let tableHtml = `
-                    <div class="detailed-asset-list-container" style="max-height: 300px; margin-top: 15px;">
-                        <table class="asset-detail-table">
-                            <thead>
-                                <tr>
-                                    <th style="width: 55%;">Resource URL (Full Path)</th>
-                                    <th style="width: 15%;">Type</th>
-                                    <th style="width: 15%;">Size (KB)</th>
-                                    <th style="width: 15%;">Load Time (ms)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                `;
-
-                assets.forEach(asset => {
-                    const loadTime = asset.durationMs ? Math.round(asset.durationMs) : 'N/A';
-                    const rowClass = (asset.sizeKb > 100 || asset.durationMs > 1000) ? 'asset-flagged' : '';
-                    tableHtml += `
-                        <tr class="${rowClass}">
-                            <td title="${asset.url}"><span class="asset-url">${asset.url}</span></td>
-                            <td>${asset.type}</td>
-                            <td>${asset.sizeKb.toFixed(2)}</td>
-                            <td>${loadTime}</td>
-                        </tr>
-                    `;
-                });
-
-                tableHtml += `</tbody></table></div>`;
-
-                html += `
-                    <div class="card app-card animated-card" style="margin-bottom: 20px; padding-bottom: 20px;">
-                        <div class="impact-badge ${overallImpact.class}">${overallImpact.text} Impact</div>
-                        <div class="app-card-content-wrapper">
-                            <div class="app-card-header">
-                                ${icon ? `<img src="${icon}" class="app-icon" alt="${name} logo">` : '<span class="app-icon-placeholder"></span>'}
-                                <div class="app-card-title-wrapper">
-                                    <h4>${name}</h4>
-                                    ${category ? `<span class="app-category-tag">${category}</span>` : ''}
-                                </div>
-                            </div>
-                            <p>
-                                <strong>Total Assets:</strong> ${totalAssets} &nbsp;|&nbsp;
-                                <strong>Matched On:</strong> <code>${matchedFingerprints.join(', ')}</code>
-                            </p>
-                            <hr style="border-top: 1px solid var(--border-color); margin: 15px 0;">
-                            <div class="app-card-body">
-                                <div class="asset-impact-summary">
-                                    <p>
-                                        <strong>Total Resource Size:</strong>
-                                        <strong class="${sizeRating}">${totalSizeKb.toFixed(2)} KB</strong>
-                                        <span class="muted-text-color" style="font-size: 0.85em;">(LCP/FCP Impact)</span>
-                                    </p>
-                                    <p>
-                                        <strong>Total Load Duration:</strong>
-                                        <strong class="${durationRating}">${totalDurationMs.toFixed(0)} ms</strong>
-                                        <span class="muted-text-color" style="font-size: 0.85em;">(FCP/Speed Index Impact)</span>
-                                    </p>
-                                    <p>
-                                        <strong>Estimated TBT Impact:</strong>
-                                        <strong class="${estimatedTBTContribution > 250 ? 'poor' : 'good'}">
-                                            ${currentTBTms > 0 ? estimatedTBTContribution.toFixed(0) + ' ms' : 'N/A'}
-                                        </strong>
-                                        <span class="muted-text-color" style="font-size: 0.85em;">(Interactivity Impact)</span>
-                                    </p>
-                                </div>
-                                <div class="app-chart-container">
-                                    <canvas id="${chartId}"></canvas>
-                                </div>
-                                ${heavyAssetsHtml}
-                            </div>
-                            ${tableHtml}
+        const culprits = appReport.topCulprits || [];
+        if (culprits.length > 0) {
+            let culpritsHtml = '<ol class="heavy-assets-list" style="margin: 0; padding-left: 20px;">';
+            culprits.forEach(app => {
+                culpritsHtml += `
+                    <li style="margin-bottom: 10px;">
+                        <span class="offender-name" style="font-weight: 600; font-size: 1.1em;">
+                            ${app.icon ? `<img src="${app.icon}" class="app-icon-small" style="vertical-align:middle;margin-right:8px;border-radius:4px;width:24px;height:24px;">` : ''}
+                            ${app.name}
+                        </span>
+                        <div style="margin-top: 5px; color: var(--error-color);">
+                            Added Weight: ${app.totalSizeKb} KB | Delay: ${app.totalDurationMs} ms
                         </div>
-                        ${recommendation ? `
-                            <div class="recommendation-box" style="margin-top: 15px;">
-                                <strong>Optimization Tip:</strong>
-                                <p>${recommendation}</p>
-                            </div>
-                        ` : ''}
-                        <div class="detail-button-wrapper" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-color);">
-                            
-                        </div>
-                    </div>
-                `;
+                        ${app.recommendation ? `<div style="font-size: 0.9em; margin-top: 5px; color: #555;">Tip: ${app.recommendation}</div>` : ''}
+                    </li>`;
             });
+            culpritsHtml += '</ol>';
 
-            container.innerHTML = html;
-            renderAppCharts(chartData);
-            attachHeavyAssetListeners();
+            offendersContainer.innerHTML = `
+                <div class="card offenders-summary-card" style="border-left: 4px solid var(--error-color);">
+                    <h3 style="color: var(--error-color); margin-bottom: 15px;"> The Culprits (High Impact Apps)</h3>
+                    ${culpritsHtml}
+                </div>
+            `;
+        } else {
+            offendersContainer.innerHTML = '';
         }
 
-        const sortButtons = document.querySelectorAll('#sort-controls-container .sort-button');
-        sortButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                sortButtons.forEach(btn => btn.classList.remove('active'));
-                button.classList.add('active');
+        const appBreakdown = appReport.appBreakdown || [];
+        let html = '';
 
-                const sortBy = button.dataset.sort;
-                let sortedApps = [];
+        appBreakdown.forEach(app => {
+            let impactClass = 'impact-low';
+            if (app.impact === 'High') impactClass = 'impact-critical';
+            else if (app.impact === 'Medium') impactClass = 'impact-medium';
 
-                switch (sortBy) {
-                    case 'impact':
-                        sortedApps = [...allAppMetrics].sort((a, b) => b.impactScore - a.impactScore);
-                        break;
-                    case 'size':
-                        sortedApps = [...allAppMetrics].sort((a, b) => b.totalSizeKb - a.totalSizeKb);
-                        break;
-                    case 'duration':
-                        sortedApps = [...allAppMetrics].sort((a, b) => b.totalDurationMs - a.totalDurationMs);
-                        break;
-                    case 'tbt':
-                        sortedApps = [...allAppMetrics].sort((a, b) => b.estimatedTBTContribution - a.estimatedTBTContribution);
-                        break;
-                }
-                drawAppCards(sortedApps);
-            });
+            html += `
+                <div class="card app-card animated-card" style="margin-bottom: 20px; padding-bottom: 20px;">
+                    <div class="impact-badge ${impactClass}">${app.impact} Impact</div>
+                    <div class="app-card-content-wrapper">
+                        <div class="app-card-header">
+                            ${app.icon ? `<img src="${app.icon}" class="app-icon" alt="${app.name}">` : '<span class="app-icon-placeholder"></span>'}
+                            <div class="app-card-title-wrapper">
+                                <h4>${app.name}</h4>
+                            </div>
+                        </div>
+                        <p><strong>Total Assets Loaded:</strong> ${app.assetCount}</p>
+                        <hr style="border-top: 1px solid var(--border-color); margin: 15px 0;">
+                        <div class="app-card-body">
+                            <div class="asset-impact-summary">
+                                <p><strong>Total Resource Size:</strong> <strong>${app.totalSizeKb} KB</strong></p>
+                                <p><strong>Total Load Duration:</strong> <strong>${app.totalDurationMs} ms</strong></p>
+                            </div>
+                        </div>
+                    </div>
+                    ${app.recommendation ? `
+                        <div class="recommendation-box" style="margin-top: 15px;">
+                            <strong>Optimization Tip:</strong>
+                            <p>${app.recommendation}</p>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
         });
 
-        const initialSort = [...allAppMetrics].sort((a, b) => b.impactScore - a.impactScore);
-        drawAppCards(initialSort);
-        document.querySelector('.sort-button[data-sort="impact"]').classList.add('active');
+        container.innerHTML = html;
+        const sortContainer = document.getElementById('sort-controls-container');
+        if (sortContainer) sortContainer.style.display = 'none'; 
 
     } else {
-        console.log("No scan data found in session. Please run a scan with 'Detected Apps' enabled.");
         noDataEl.style.display = 'block';
     }
 }
@@ -1845,122 +1680,64 @@ function finalizeScan() {
         `;
     }
 
+
+
+
+
+
+
+
+
+
+
+
+
     // --- (MODIFIED) Function to display the app report (Dashboard Grid) ---
-    // --- (CLEANED & FIXED) Function to display the app report (Dashboard Grid) ---
-function displayReport(report, currentTBT) {
+ function displayReport(report, currentTBT) {
     const container = document.getElementById('apps-grid-content');
     container.innerHTML = '';
 
-    // Use report.detectedApps (the report object is now bigger)
-    if (!report || !report.detectedApps || Object.keys(report.detectedApps).length === 0) {
+    if (!report || !report.appBreakdown || report.appBreakdown.length === 0) {
         container.innerHTML = '<p class="card">No known third-party apps were detected.</p>';
         return;
     }
 
-    const currentTBTms = parseTBT(currentTBT); // Will be 0 if currentTBT is null
-
-    Object.values(report.detectedApps).forEach(app => {
+    report.appBreakdown.forEach(app => {
         const card = document.createElement('div');
         card.className = 'card app-card animated-card';
 
-        // --- DATA EXTRACTION & STORAGE ---
-        const totalAssets = app.assets ? app.assets.length : 0;
-        const matchedOn = app.matchedFingerprints.length > 0 ? app.matchedFingerprints.join(', ') : 'N/A';
+        let impactClass = 'impact-low';
+        if (app.impact === 'High') impactClass = 'impact-critical';
+        else if (app.impact === 'Medium') impactClass = 'impact-medium';
 
-        // --- CALCULATIONS ---
-        const totalSizeKb = app.assets ? app.assets.reduce((sum, a) => sum + (a.sizeKb || 0), 0) : 0;
-        const totalDurationMs = app.assets ? app.assets.reduce((sum, a) => sum + (a.durationMs || 0), 0) : 0;
-        const sizeRating = getSizeRating(totalSizeKb);
-        const durationRating = getDurationRating(totalDurationMs);
-        const overallImpact = getOverallImpactRating(totalSizeKb, totalDurationMs);
-
-        // --- EXTRA INFO ---
-        const recommendation = app.recommendation || '';
-        const icon = app.icon || '';
-
-        // --- ASSET COUNTING ---
-        const jsAssets = app.assets.filter(a => a.type === 'JS');
-        const cssAssets = app.assets.filter(a => a.type === 'CSS');
-        const jsCount = jsAssets.length;
-        const cssCount = cssAssets.length;
-        const otherCount = totalAssets - jsCount - cssCount;
-
-        const estimatedTBTContribution = jsAssets.reduce((sum, a) => sum + (a.durationMs || 0), 0);
-
-        // Store full data for modal
-        card.dataset.appData = JSON.stringify(app);
-        card.dataset.tbtContribution = estimatedTBTContribution.toFixed(0);
-        card.dataset.currentTbt = currentTBTms;
-
-        // --- BAR GRAPH VISUALIZATION ---
-        let detailHtml = `
-            <p style="font-weight:600; margin-top: 10px;">Asset Details:</p>
-            <ul class="asset-details-list">
-        `;
-
-        const maxIndicatorBlocks = 10;
-        const maxCount = Math.max(jsCount, cssCount, otherCount, 1);
-
-        const renderIndicator = (count, label) => {
-            if (count === 0) return '';
-            const blocks = Math.round((count / maxCount) * maxIndicatorBlocks);
-            const indicator = '█'.repeat(blocks);
-            const barWidth = blocks * 10;
-
-            return `
-                <li>
-                    <span class="asset-type">${label} (${count}):</span>
-                    <span class="asset-indicator" style="width: ${barWidth}px;">${indicator}</span>
-                </li>
-            `;
-        };
-
-        if (jsCount > 0) detailHtml += renderIndicator(jsCount, 'JS Files');
-        if (cssCount > 0) detailHtml += renderIndicator(cssCount, 'CSS Files');
-        if (otherCount > 0) detailHtml += renderIndicator(otherCount, 'Other Assets');
-
-        detailHtml += '</ul>';
-        // --- END BAR GRAPH ---
-
-        // --- CARD HTML OUTPUT ---
         card.innerHTML = `
-            <div class="impact-badge ${overallImpact.class}">${overallImpact.text} Impact</div>
-
+            <div class="impact-badge ${impactClass}">${app.impact} Impact</div>
             <div class="app-card-content-wrapper">
                 <div class="app-card-header">
-                    ${icon ? `<img src="${icon}" class="app-icon" alt="${app.name} logo">` : '<span class="app-icon-placeholder"></span>'}
+                    ${app.icon ? `<img src="${app.icon}" class="app-icon" alt="${app.name}">` : '<span class="app-icon-placeholder"></span>'}
                     <h4>${app.name}</h4>
                 </div>
-
-                <p><strong>Total Assets:</strong> ${totalAssets}</p>
-                <p><strong>Size Impact:</strong> <strong class="${sizeRating}">${totalSizeKb.toFixed(2)} KB</strong></p>
-                <p><strong>Load Impact:</strong> <strong class="${durationRating}">${totalDurationMs.toFixed(0)} ms</strong></p>
-                <p style="margin-top: 10px;"><strong>Matched On:</strong> <code>${matchedOn}</code></p>
-
-                <hr style="border-top: 1px dashed var(--border-color); margin: 10px 0;">
-                ${detailHtml}
+                <p><strong>Total Assets:</strong> ${app.assetCount}</p>
+                <p><strong>Size Impact:</strong> <strong>${app.totalSizeKb} KB</strong></p>
+                <p><strong>Load Delay:</strong> <strong>${app.totalDurationMs} ms</strong></p>
             </div>
-
-            ${recommendation ? `
-                <div class="recommendation-box">
+            ${app.recommendation ? `
+                <div class="recommendation-box" style="margin-top: 10px;">
                     <strong>Optimization Tip:</strong>
-                    <p>${recommendation}</p>
+                    <p>${app.recommendation}</p>
                 </div>
             ` : ''}
         `;
-        // --- END CARD HTML ---
-
-        // --- EVENT LISTENER ---
-        card.addEventListener('click', () => {
-            const appData = JSON.parse(card.dataset.appData);
-            const tbtContr = parseFloat(card.dataset.tbtContribution);
-            const currentTbt = parseFloat(card.dataset.currentTbt);
-            showAppModal(appData, tbtContr, currentTbt);
-        });
-
         container.appendChild(card);
     });
 }
+
+
+
+
+
+
+
 
 
     // --- MODAL DISPLAY FUNCTION (Restructured for better visual flow) ---
