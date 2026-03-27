@@ -164,118 +164,105 @@ async function handleModals(page, logStreamCallback) {
     }
 }
 
-// --- UNIFIED SCAN ENDPOINT ---
-app.get('/scan-all', async (req, res) => {
+ 
+    app.get('/scan-all', async (req, res) => {
 
-  // 1. Get data from query parameters
   const { storeUrl, storePassword, runPerfScan, runAppScan } = req.query;
 
   if (!storeUrl) {
     return res.status(400).json({ error: 'storeUrl is required' });
   }
 
-  // 2. Set Server-Sent Event (SSE) headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  // 3. Define the streaming log function
   const logStreamCallback = (message) => {
     console.log(message);
 
     let type = 'info';
-    if (message.startsWith('[+]') || message.includes('success')) type = 'success';
-    if (message.startsWith('[!]') || message.startsWith('ERROR:') || message.includes('failed')) type = 'error';
-    if (message.includes('warn') || message.includes('Note:')) type = 'warning';
+    if (message.startsWith('[+]')) type = 'success';
+    if (message.startsWith('[!]') || message.includes('ERROR')) type = 'error';
 
-    sendSse(res, 'log', { message, type }); // Send to client
+    sendSse(res, 'log', { message, type });
   };
 
   let browser;
   let errorOccurred = false;
 
   try {
-    // 4. --- BROWSER LAUNCHES ONCE ---
+    // Launch browser
     logStreamCallback('[System] Launching browser...');
     browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-
-    // Disable cache to fix 0.00 KB files issue
     await page.setCacheEnabled(false);
-    logStreamCallback('[System] Browser cache disabled.');
 
-    // 5. --- NAVIGATION AND PASSWORD HAPPENS ONCE ---
     logStreamCallback('[System] Navigating to store...');
     await page.goto(storeUrl, { waitUntil: 'networkidle2', timeout: 90000 });
 
+    // Password handling
     if (storePassword) {
-      logStreamCallback('[System] Password provided, attempting to unlock store...');
       try {
-        const passwordInput = await page.waitForSelector('input[type="password"]#password', { timeout: 5000 });
-        if (passwordInput) {
-          await passwordInput.type(storePassword);
+        const input = await page.$('input[type="password"]');
+        if (input) {
+          await input.type(storePassword);
           await page.click('button[type="submit"]');
-          logStreamCallback('[System] Password submitted, waiting for navigation...');
-          await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 120000 });
-          logStreamCallback('[System] Store unlocked successfully.');
-        } else {
-          logStreamCallback('[System] Note: Password provided, but store appears public.');
+          await page.waitForNavigation({ waitUntil: 'networkidle2' });
         }
-      } catch {
-        logStreamCallback('[System] Warning: Password form not found. Assuming store is public.');
-      }
-    } else {
-      logStreamCallback('[System] No password provided, scanning public page.');
+      } catch {}
     }
 
-    // --- Handle Modals ---
     await handleModals(page, logStreamCallback);
-
-    logStreamCallback('[System] Page is loaded and ready for scanning.');
 
     const fingerprintMap = buildFingerprintMap();
 
-    // 6. Run App Scan First
-    let appReport = null;
+    let appReport = {
+      executiveSummary: {},
+      appBreakdown: [],
+      topCulprits: []
+    };
+
+    let perfReport = {
+      success: false,
+      metrics: null,
+      categories: null,
+      audits: null,
+      culprits: null
+    };
+
+    // 🔥 APP SCAN
     if (runAppScan === 'true') {
-      logStreamCallback('[App] Running App/Asset scan...');
+      logStreamCallback('[App] Running scan...');
       appReport = await scanStoreLogic(page, logStreamCallback, fingerprintMap);
-      sendSse(res, 'scanResult', appReport);
-    } else {
-      sendSse(res, 'scanResult', { detectedApps: [] });
     }
 
-    // 7. Run Performance Scan Second
-    let perfReport = null;
+    // 🔥 PERF SCAN (ONLY ONCE — FIXED)
     if (runPerfScan === 'true') {
-      logStreamCallback('[Perf] Running Lighthouse scan... (This may take a minute)');
-      const { port: browserPort } = new URL(browser.wsEndpoint());
+      logStreamCallback('[Perf] Running Lighthouse...');
 
-      // --- LIGHTHOUSE CONFIG ---
-      const lighthouseConfig = {
-        port: browserPort,
+      const { port } = new URL(browser.wsEndpoint());
+
+      const { lhr } = await lighthouse(page.url(), {
+        port,
         output: 'json',
         settings: {
           formFactor: 'desktop',
-          screenEmulation: { mobile: false, width: 1350, height: 940, deviceScaleFactor: 1, disabled: false }
+          screenEmulation: { mobile: false }
         }
-      };
+      });
 
-      const { lhr } = await lighthouse(page.url(), lighthouseConfig);
-
-      logStreamCallback('[Perf] Lighthouse scan complete. Processing metrics.');
       const audits = lhr.audits;
 
       const metrics = {
         lcp: audits['largest-contentful-paint']?.displayValue ?? 'N/A',
-        fid: audits['first-input-delay']?.displayValue ?? 'N/A',
         cls: audits['cumulative-layout-shift']?.displayValue ?? 'N/A',
-        fcp: audits['first-contentful-paint']?.displayValue ?? 'N/A',
         tbt: audits['total-blocking-time']?.displayValue ?? 'N/A',
+        fcp: audits['first-contentful-paint']?.displayValue ?? 'N/A',
         speedIndex: audits['speed-index']?.displayValue ?? 'N/A',
-        performanceScore: (lhr.categories.performance.score * 100).toFixed(0)
+        performanceScore: Math.round(lhr.categories.performance.score * 100)
       };
 
       const categories = {
@@ -285,47 +272,43 @@ app.get('/scan-all', async (req, res) => {
         seo: lhr.categories.seo
       };
 
-      const detailedAudits = lhr.audits;
-      const culprits = findCulprits(detailedAudits, fingerprintMap);
+      const culprits = findCulprits(audits, fingerprintMap);
 
       perfReport = {
         success: true,
         metrics,
         categories,
-        audits: detailedAudits,
+        audits,
         culprits
       };
 
-      sendSse(res, 'perfResult', perfReport);
-    } else {
-      sendSse(res, 'perfResult', { success: false, metrics: null, categories: null, audits: null, culprits: null });
+      // 🔥 MERGE PERFORMANCE
+      if (appReport?.executiveSummary) {
+        appReport.executiveSummary.performanceScore = metrics.performanceScore;
+      }
     }
+
+    // 🔥 FINAL SEND (ONLY ONCE — FIXED)
+    sendSse(res, 'scanResult', appReport);
+    sendSse(res, 'perfResult', perfReport);
 
     logStreamCallback('[System] All scans finished.');
 
   } catch (error) {
     errorOccurred = true;
-    console.error('[Server] Error during unified scan:', error);
-    logStreamCallback(`[System] ERROR: ${error.message}`);
+    console.error(error);
     sendSse(res, 'scanError', { details: error.message });
+
   } finally {
-    // 8. --- CLOSE BROWSER ---
-    if (browser) {
-      await browser.close();
-      logStreamCallback('[System] Browser closed.');
-    }
+    if (browser) await browser.close();
 
     if (!errorOccurred) {
-      logStreamCallback('[System] Sending completion signal.');
-      sendSse(res, 'scanComplete', { message: 'All tasks finished.' });
+      sendSse(res, 'scanComplete', { message: 'Done' });
     }
 
-    // 9. Close the connection
     res.end();
-    console.log('[Server] Scan stream closed.');
   }
 });
-
 
 // ---------------------------------------------------------------
 // (NEW) GHOST CODE SCANNER ENDPOINT
