@@ -45,21 +45,23 @@ let FINGERPRINT_DB = {};
 
 // --- (NEW) Helper to build a fast lookup map from the DB ---
 function buildFingerprintMap() {
-    const map = new Map();
-    for (const [appName, appData] of Object.entries(FINGERPRINT_DB)) {
-        if (appData && appData.fingerprints) {
-            for (const fingerprint of appData.fingerprints) {
-                // Store the app name and icon for the culprit report
-                map.set(fingerprint, { 
-                    name: appName, 
-                    icon: appData.icon,
-                    recommendation: appData.recommendation,
-                    category: appData.category || 'Uncategorized' // <-- ADD THIS LINE
-                });
-            }
-        }
+  const map = new Map();
+  for (const [appName, appData] of Object.entries(FINGERPRINT_DB)) {
+    // ✅ Guard: skip entries with no fingerprints array
+    if (!appData || !Array.isArray(appData.fingerprints) || appData.fingerprints.length === 0) {
+      console.warn(`[DB] Skipping "${appName}" — missing or empty fingerprints array.`);
+      continue;
     }
-    return map;
+    for (const fingerprint of appData.fingerprints) {
+      map.set(fingerprint, {
+        name: appName,
+        icon: appData.icon,
+        recommendation: appData.recommendation,
+        category: appData.category || 'Uncategorized'
+      });
+    }
+  }
+  return map;
 }
 
 // --- (UPGRADED) Helper to find TBT culprits ---
