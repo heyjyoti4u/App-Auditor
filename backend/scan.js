@@ -76,6 +76,17 @@ export async function scanStoreLogic(page, logStreamCallback, fingerprintMap) {
 // --------------------------------------------------
 // PROCESS ASSETS
 // --------------------------------------------------
+// scan.js — processAssets() ke top pe ek helper
+function inferCategory(appName) {
+  const n = appName.toLowerCase();
+  if (n.includes('review') || n.includes('yotpo') || n.includes('stamped')) return 'Reviews';
+  if (n.includes('analytics') || n.includes('pixel') || n.includes('hotjar')) return 'Analytics';
+  if (n.includes('chat') || n.includes('support') || n.includes('gorgias')) return 'Customer Support';
+  if (n.includes('upsell') || n.includes('conversion') || n.includes('cart')) return 'Sales & Conversion';
+  if (n.includes('shipping') || n.includes('order') || n.includes('return')) return 'Orders & Shipping';
+  if (n.includes('sms') || n.includes('email') || n.includes('klaviyo')) return 'Marketing';
+  return 'Store Management';
+}
 function processAssets(detectedResources, storeUrl, fingerprintMap) {
   const appMap = new Map();
   const allFingerprints = new Set(fingerprintMap.keys());
@@ -108,16 +119,29 @@ function processAssets(detectedResources, storeUrl, fingerprintMap) {
       if (resource.url.includes(fingerprint)) {
         const appName = appInfo.name;
 
-        if (!appMap.has(appName)) {
-          appMap.set(appName, {
-            name: appName,
-            icon: appInfo.icon,
-            recommendation: appInfo.recommendation,
-            totalSizeKb: 0,
-            totalDurationMs: 0,
-            assets: []
-          });
+        function getDynamicRecommendation(app) {
+        if (app.totalDurationMs > 1200) {
+        return 'Critical impact. Consider removing or deferring this app.';
+         }
+        if (app.totalDurationMs > 500) {
+       return 'Moderate impact. Optimize loading (lazy load or defer).';
+         }
+      return 'Low impact. No action needed.';
         }
+ 
+       if (!appMap.has(appName)) {
+      appMap.set(appName, {
+        name: appName,
+        icon: appInfo.icon,
+        // ✅ FIX: DB se recommendation lo pehle, dynamic baad mein
+        recommendation: appInfo.recommendation || null,
+        // ✅ FIX: DB se category directly lo — getCategory() mat use karo
+        category: appInfo.category || inferCategory(appName),
+        totalSizeKb: 0,
+        totalDurationMs: 0,
+        assets: []
+      });
+    }
 
         const app = appMap.get(appName);
         app.assets.push(resource);
@@ -165,8 +189,13 @@ function processAssets(detectedResources, storeUrl, fingerprintMap) {
 
   let totalAppSizeKb = 0;
 
-  const formattedApps = Array.from(appMap.values()).map(app => {
-    totalAppSizeKb += app.totalSizeKb;
+const formattedApps = Array.from(appMap.values()).map(app => {
+  // ✅ FIX: Ab app exist karta hai, toh dynamic rec safely calculate hogi
+  const dynamicRec = app.totalDurationMs > 1200
+    ? 'Critical impact. Consider removing or deferring this app.'
+    : app.totalDurationMs > 500
+    ? 'Moderate impact. Optimize loading (lazy load or defer).'
+    : 'Low impact. No action needed.';    totalAppSizeKb += app.totalSizeKb;
 
     let impact = 'Low';
 
@@ -177,16 +206,29 @@ function processAssets(detectedResources, storeUrl, fingerprintMap) {
       impact = 'Medium';
     }
 
+  function getCategory(name) {
+  const n = name.toLowerCase();
+
+  if (n.includes('google') || n.includes('analytics')) return 'Analytics';
+  if (n.includes('facebook') || n.includes('pixel')) return 'Ads';
+  if (n.includes('cdn') || n.includes('jsdelivr')) return 'CDN';
+
+  return 'UI';
+}
+
     return {
-      name: app.name,
-      icon: app.icon,
-      totalSizeKb: +app.totalSizeKb.toFixed(2),
-      totalDurationMs: +app.totalDurationMs.toFixed(2),
-      impact,
-      assetCount: app.assets.length,
-      recommendation: app.recommendation
-    };
-  });
+    name: app.name,
+    icon: app.icon,
+    category: app.category,                          // ✅ DB category
+    recommendation: app.recommendation || dynamicRec, // ✅ DB first, dynamic fallback
+    totalSizeKb: +app.totalSizeKb.toFixed(2),
+    totalDurationMs: +app.totalDurationMs.toFixed(2),
+    impact,
+    assetCount: app.assets.length,
+    assets: app.assets, // ✅ Master-detail ke liye assets bhi bhejo
+    estimatedSavingsMs: Math.round(app.totalDurationMs * 0.6)
+  };
+});
 
   formattedApps.sort((a, b) => b.totalSizeKb - a.totalSizeKb);
 
@@ -205,12 +247,15 @@ function processAssets(detectedResources, storeUrl, fingerprintMap) {
     highImpactApps
   };
 
+  
+
   return {
     executiveSummary,
     topCulprits,
     appBreakdown: formattedApps,
     unidentifiedDomains: Array.from(unidentifiedHostnames),
-    heavyHitters
+    heavyHitters,
+    unknownScriptsCount: heavyHitters.length
   };
 }
 
