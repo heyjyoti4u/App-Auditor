@@ -3,163 +3,94 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>App Auditor Dashboard</title>
-    
-    <link rel="stylesheet" href="server.css"> 
-    
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"> 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <title>Settings</title>
+    <link rel="stylesheet" href="server.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    
-    
-
     <div class="dashboard-layout">
         <aside class="sidebar">
             <div class="sidebar-header">
-                <i class="fas fa-shield-alt logo-icon"></i> <span>App Auditor</span>
+                <i class="fas fa-shield-alt logo-icon"></i>
+                <span>App Auditor</span>
             </div>
             <nav class="sidebar-nav">
                 <ul>
-                    <li><a href="global-app-report.html" id="globalAppReportLink"><i class="fas fa-chart-bar"></i> Detailed App Summary</a></li>
-                    <li><a href="global-performance-report.html" id="globalPerformanceReportLink"><i class="fa-solid fa-chart-simple"></i> Detailed Performance Summary</a></li>
-                    
-                    <li class="active"><a href="server.html"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
-                    <li><a href="history.html"><i class="fas fa-history"></i> History</a></li>
-                    <li><a href="#"><i class="fas fa-cog"></i> Settings</a></li>
+                    <li><a href="global-app-report.html"><i class="fas fa-chart-bar"></i> Detailed App Summary</a></li>
+                    <li><a href="global-performance-report.html"><i class="fas fa-chart-line"></i> Detailed Performance</a></li>
+                    <li><a href="history.html"><i class="fas fa-history"></i> Scan History</a></li>
+                    <li><a href="server.html"><i class="fas fa-tachometer-alt"></i> Back to Dashboard</a></li>
+                    <li class="active"><a href="settings.html"><i class="fas fa-cog"></i> Settings</a></li>
                 </ul>
             </nav>
-            <div class="sidebar-footer">
-                <a href="#"><i class="fas fa-question-circle"></i> Help</a>
-            </div>
         </aside>
 
         <main class="main-content">
-            
-            <div class="content-wrapper"> 
-                
+            <div class="content-wrapper">
                 <header class="main-header">
-                    <h1>Dashboard Overview</h1>
+                    <h1>Settings</h1>
                 </header>
 
                 <section class="content-area">
-                    <div class="input-section card animated-card">
-                        <h2>Scan a Store</h2>
-                        
-                        <div class="scan-input-group"> 
+                    <div class="card">
+                        <div class="card-content">
+                            <h3 class="section-title">Scan Configuration</h3>
+                            <p class="section-description">
+                                Control the default parameters for all future scans.
+                            </p>
                             
-                            <div class="store-type-selector">
-                                <label class="radio-label">
-                                    <input type="radio" name="storeType" id="liveStore" value="live" checked>
-                                    Live Store (Public)
-                                </label>
-                                <label class="radio-label">
-                                    <input type="radio" name="storeType" id="protectedStore" value="protected">
-                                    Password Protected
-                                </label>
-                            </div>
-
-                            <div class="input-fields-wrapper">
-                                <div class="input-group">
-                                    <label for="storeUrl">Store URL:</label>
-                                    <input type="url" id="storeUrl" placeholder="https://your-store.myshopify.com" required> 
-                                </div>
-                                
-                                <div class="input-group" id="passwordGroup"> <label for="storePassword">Store Password:</label>
-                                    <input type="password" id="storePassword" placeholder="Enter storefront password (required)"> 
+                            <div class="setting-item">
+                                <label for="deviceToggle" class="setting-label">Default Scan Device</label>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="deviceToggle" class="settings-toggle-input" checked> 
+        
+                                    <label for="deviceToggle" class="settings-toggle-label">
+                                       <span class="toggle-text toggle-text-left">Mobile</span>
+                                       <span class="toggle-text toggle-text-right">Desktop</span>
+                                    </label>
                                 </div>
                             </div>
-
-                            <button id="scanButton" class="primary-button animated-button scan-button-large">
-                                <i class="fas fa-search"></i> Scan Store
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="results-controls">
-                        <h4 class="results-controls-title">Select Reports to Display:</h4>
-                        
-                        <div class="toggle-group-wrapper">
-                            <div class="toggle-control-group">
-                                <label for="togglePerformance" class="toggle-label">Performance Report</label>
-                                <label class="switch">
-                                    <input type="checkbox" id="togglePerformance" checked>
-                                    <span class="slider round"></span>
-                                </label>
-                            </div>
-                            
-                            <div class="toggle-control-group">
-                                <label for="toggleApps" class="toggle-label">Detected Apps</label>
-                                <label class="switch">
-                                    <input type="checkbox" id="toggleApps" checked>
-                                    <span class="slider round"></span>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div id="results-wrapper" class="results-wrapper" style="display: none;">
-                        <div class="results-layout">
-                            
-                            <section id="performance-container" class="performance-column">
-                                <h3>Performance Report</h3>
-                                <div id="performance-card-content" class="card">
-                                </div>
-                            </section>
-
-                            <section id="apps-container" class="apps-column">
-                                <h3>Detected Apps</h3>
-                                <div id="apps-grid-content" class="apps-grid">
-                                </div>
-                            </section>
-                            
-                            <section id="unidentified-apps-section" class="unidentified-apps-column">
-                                </section>
-                            
-                            <section id="heavy-hitters-section" class="heavy-hitters-column">
-                                </section>
-
-                        </div> </div> <div id="loading-placeholder" class="loading-placeholder card animated-card" style="display: none;">
-                        <div class="terminal-window">
-                            <div class="terminal-header">
-                                <div class="terminal-buttons">
-                                    <span class="terminal-dot red"></span>
-                                    <span class="terminal-dot yellow"></span>
-                                    <span class="terminal-dot green"></span>
-                                </div>
-                                <div class="terminal-title">
-                                    Scan in Progress...
-                                </div>
-                            </div>
-                            <div class="terminal-body">
-                                <pre id="log-output"></pre>
-                                <div class="spinner-container" id="spinner-container">
-                                    <div class="spinner"></div>
-                                    <span id="loading-message">Connecting to server...</span>
+                            <div class="setting-item">
+                                <label for="heavyHitterInput" class="setting-label">"Heavy Hitter" Threshold</label>
+                                <div class="setting-input-group">
+                                    <input type="number" id="heavyHitterInput" class="setting-input" value="150">
+                                    <span>KB</span>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                    <div id="error-placeholder" class="error-placeholder card animated-card" style="display: none;"> <i class="fas fa-exclamation-triangle error-icon"></i>
-                        <p>Scan failed. Please try again.</p>
                     </div>
                 </section>
-                
-            </div> 
-        </main>
-    </div>
 
-    <div id="appModal" class="modal-backdrop" style="display: none;">
-        <div class="modal-content-wrapper">
-            <span id="closeModal" class="close-button">&times;</span>
-            <div id="modalBody">
+                <section class="content-area" style="margin-top: 20px;">
+                    <div class="card danger-zone">
+                        <div class="card-content">
+                            <h3 class="section-title danger-title">Data Management</h3>
+                            <p class="section-description">
+                                Export your data or clear all scan history. This cannot be undone.
+                            </p>
+                            
+                            <div class="setting-item">
+                                <label class="setting-label">Export History</label>
+                                <button id="exportHistoryBtn" class="secondary-button">
+                                    <i class="fas fa-download"></i> Export as JSON
+                                </button>
+                            </div>
+
+                            <div class="setting-item">
+                                <label class="setting-label">Clear History</label>
+                                <button id="clearHistorySettingsBtn" class="secondary-button error-button">
+                                    <i class="fas fa-trash-alt"></i> Clear All History
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
             </div>
-        </div>
+        </main>
     </div>
     
     <script src="client.js"></script>
-    
 </body>
 </html>
