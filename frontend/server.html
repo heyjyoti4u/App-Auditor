@@ -1,96 +1,518 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Settings</title>
-    <link rel="stylesheet" href="server.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>App Auditor</title>
+<link rel="stylesheet" href="server.css">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <div class="dashboard-layout">
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <i class="fas fa-shield-alt logo-icon"></i>
-                <span>App Auditor</span>
-            </div>
-            <nav class="sidebar-nav">
-                <ul>
-                    <li><a href="global-app-report.html"><i class="fas fa-chart-bar"></i> Detailed App Summary</a></li>
-                    <li><a href="global-performance-report.html"><i class="fas fa-chart-line"></i> Detailed Performance</a></li>
-                    <li><a href="history.html"><i class="fas fa-history"></i> Scan History</a></li>
-                    <li><a href="server.html"><i class="fas fa-tachometer-alt"></i> Back to Dashboard</a></li>
-                    <li class="active"><a href="settings.html"><i class="fas fa-cog"></i> Settings</a></li>
-                </ul>
-            </nav>
-        </aside>
 
-        <main class="main-content">
-            <div class="content-wrapper">
-                <header class="main-header">
-                    <h1>Settings</h1>
-                </header>
+<header class="topbar">
+  <div class="topbar-brand"><span class="brand-dot"></span>APP AUDITOR</div>
+  <nav class="topbar-tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="speed-audit">Speed Audit</button>
+    <button class="tab" data-tab="images">Images</button>
+    <button class="tab" data-tab="ghost">Ghost Scripts</button>
+    <button class="tab" data-tab="fonts">Font Optimizer</button>
+    <button class="tab" data-tab="css">CSS Analysis</button>
+    <button class="tab" data-tab="history">History</button>
+  </nav>
+<div class="topbar-actions">
+    <input id="storeUrl" class="url-input" type="text" placeholder="store.myshopify.com"/>
+    <input id="adminToken" class="url-input" type="password" placeholder="shpat_..." style="width:160px;"/>
+    <button id="scanButton" class="scan-btn"><i class="fas fa-search"></i> Scan</button>
+  </div>
+</header>
 
-                <section class="content-area">
-                    <div class="card">
-                        <div class="card-content">
-                            <h3 class="section-title">Scan Configuration</h3>
-                            <p class="section-description">
-                                Control the default parameters for all future scans.
-                            </p>
-                            
-                            <div class="setting-item">
-                                <label for="deviceToggle" class="setting-label">Default Scan Device</label>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="deviceToggle" class="settings-toggle-input" checked> 
-        
-                                    <label for="deviceToggle" class="settings-toggle-label">
-                                       <span class="toggle-text toggle-text-left">Mobile</span>
-                                       <span class="toggle-text toggle-text-right">Desktop</span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="setting-item">
-                                <label for="heavyHitterInput" class="setting-label">"Heavy Hitter" Threshold</label>
-                                <div class="setting-input-group">
-                                    <input type="number" id="heavyHitterInput" class="setting-input" value="150">
-                                    <span>KB</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
+<div class="options-bar">
+  <label class="option-toggle"><input type="checkbox" id="toggleApps" checked><span class="toggle-track"></span>App Scan</label>
+  <label class="option-toggle"><input type="checkbox" id="togglePerformance" checked><span class="toggle-track"></span>Performance</label>
+  <label class="option-toggle"><input type="radio" name="storeType" id="liveStore" value="live" checked>Live store</label>
+  <label class="option-toggle"><input type="radio" name="storeType" id="protectedStore" value="protected">Password protected</label>
+  <div id="passwordGroup" class="password-group disabled">
+    <input id="storePassword" type="password" class="url-input" placeholder="Store password" style="width:160px">
+  </div>
+</div>
 
-                <section class="content-area" style="margin-top: 20px;">
-                    <div class="card danger-zone">
-                        <div class="card-content">
-                            <h3 class="section-title danger-title">Data Management</h3>
-                            <p class="section-description">
-                                Export your data or clear all scan history. This cannot be undone.
-                            </p>
-                            
-                            <div class="setting-item">
-                                <label class="setting-label">Export History</label>
-                                <button id="exportHistoryBtn" class="secondary-button">
-                                    <i class="fas fa-download"></i> Export as JSON
-                                </button>
-                            </div>
-
-                            <div class="setting-item">
-                                <label class="setting-label">Clear History</label>
-                                <button id="clearHistorySettingsBtn" class="secondary-button error-button">
-                                    <i class="fas fa-trash-alt"></i> Clear All History
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-            </div>
-        </main>
+<div id="loading-placeholder" class="loading-screen" style="display:none">
+  <div class="terminal-wrap">
+    <div class="terminal-bar">
+      <span class="t-dot" style="background:#f43f5e"></span>
+      <span class="t-dot" style="background:#f59e0b"></span>
+      <span class="t-dot" style="background:#4ade80"></span>
+      <span id="loading-message" class="t-title">Connecting...</span>
     </div>
-    
-    <script src="client.js"></script>
+    <div class="terminal-body"><div id="log-output"></div></div>
+    <div id="spinner-container" class="terminal-footer">
+      <span class="spinner"></span><span id="spinner-label">Scanning...</span>
+    </div>
+  </div>
+</div>
+
+<div id="error-placeholder" class="error-screen" style="display:none">
+  <div class="error-card">
+    <i class="fas fa-triangle-exclamation"></i>
+    <p id="error-msg">Something went wrong.</p>
+    <button onclick="document.getElementById('error-placeholder').style.display='none'" class="scan-btn">Dismiss</button>
+  </div>
+</div>
+
+<div id="app-shell" style="display:none">
+
+  <!-- OVERVIEW -->
+  <div id="tab-overview" class="tab-panel active">
+    <div class="shell-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <p class="sidebar-label">Performance Score</p>
+          <div class="score-ring-wrap">
+            <svg class="score-ring-svg" viewBox="0 0 80 80">
+              <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border)" stroke-width="5"/>
+              <circle id="score-ring-circle" cx="40" cy="40" r="34" fill="none" stroke="var(--warn)"
+                stroke-width="5" stroke-linecap="round" stroke-dasharray="213.6" stroke-dashoffset="213.6"
+                transform="rotate(-90 40 40)"/>
+            </svg>
+            <div class="score-ring-inner">
+              <span id="score-val" class="score-number">—</span>
+              <span class="score-sub">/ 100</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar-section">
+          <p class="sidebar-label">Core Vitals</p>
+          <div id="vitals-list"></div>
+        </div>
+        <div class="sidebar-section">
+          <p class="sidebar-label">Categories</p>
+          <nav id="cat-nav" class="cat-nav">
+            <button class="cat-nav-item active" data-cat="all">
+              <span class="cat-left"><span class="cat-dot"></span>All apps</span>
+              <span class="cat-count" id="cat-count-all">—</span>
+            </button>
+          </nav>
+        </div>
+      </aside>
+      <main class="main-content">
+        <div id="overview-empty" class="empty-state">
+          <div class="empty-icon">◈</div>
+          <p class="empty-title">No scan yet</p>
+          <p class="empty-sub">Enter a store URL above and hit Scan.</p>
+        </div>
+        <div id="overview-results" style="display:none">
+          <div class="results-header">
+            <div>
+              <span class="results-title" id="results-store-url"></span>
+              <span class="results-meta" id="results-meta"></span>
+            </div>
+            <div class="sort-bar">
+              <span class="sort-label">Sort:</span>
+              <button class="sort-btn active" data-sort="size">Size</button>
+              <button class="sort-btn" data-sort="time">Load time</button>
+              <button class="sort-btn" data-sort="impact">Impact</button>
+            </div>
+          </div>
+          <div id="insight-banner" class="insight-banner" style="display:none"></div>
+          <div id="cat-blocks-container"></div>
+          <div id="unidentified-section"></div>
+          <div id="heavy-hitters-section"></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- PERFORMANCE -->
+  <div id="tab-performance" class="tab-panel">
+    <div id="perf-empty" class="empty-state">
+      <div class="empty-icon">⚡</div>
+      <p class="empty-title">No performance data</p>
+      <p class="empty-sub">Run a scan with "Performance" enabled.</p>
+    </div>
+    <div id="perf-content" style="display:none;padding:24px 28px;max-width:1100px;margin:0 auto"></div>
+  </div>
+
+  <!-- SPEED AUDIT -->
+  <div id="tab-speed-audit" class="tab-panel">
+    <div style="padding:24px 28px;max-width:900px;margin:0 auto">
+      <div class="feature-card" style="margin-bottom:20px">
+        <div class="feature-card-header">
+          <div class="feature-card-icon" style="background:rgba(109,124,255,.15)">
+            <i class="fas fa-gauge-high" style="color:var(--accent)"></i>
+          </div>
+          <div>
+            <h2 class="feature-card-title">Run Speed Test</h2>
+            <p class="feature-card-desc">Test your store's Core Web Vitals and page load performance. Runs Lighthouse independently — does not re-scan apps.</p>
+          </div>
+        </div>
+        <div class="device-toggle-row">
+          <button class="device-btn active" data-device="mobile"><i class="fas fa-mobile-alt"></i> Mobile</button>
+          <button class="device-btn" data-device="desktop"><i class="fas fa-desktop"></i> Desktop</button>
+        </div>
+        <button id="runSpeedTest" class="scan-btn" style="width:100%;justify-content:center;height:42px;margin-top:16px">
+          <i class="fas fa-play"></i> Run Test
+        </button>
+        <div id="speed-test-loading" style="display:none;padding:10px 0">
+          <div class="ghost-loading"><span class="spinner"></span> Running Lighthouse...</div>
+          <div id="speed-test-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
+        </div>
+      </div>
+      <div id="speed-result-card" style="display:none" class="feature-card" id="speed-result-display">
+        <h3 class="feature-card-title" style="margin-bottom:16px">Latest Result</h3>
+        <div id="speed-result-content"></div>
+      </div>
+      <div class="feature-card">
+        <h3 class="feature-card-title" style="margin-bottom:16px">Recent Speed Tests</h3>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>Page</th><th>Score</th><th>LCP</th><th>TBT</th><th>CLS</th><th>Device</th><th>Date</th></tr></thead>
+            <tbody id="speedHistoryBody"><tr><td colspan="7" class="table-empty">No tests run yet.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- IMAGE OPTIMIZER -->
+  <div id="tab-images" class="tab-panel">
+    <div style="padding:24px 28px;max-width:1100px;margin:0 auto">
+      <div class="feature-card" style="margin-bottom:20px">
+        <div class="feature-card-header">
+          <div class="feature-card-icon" style="background:rgba(74,222,128,.12)">
+            <i class="fas fa-image" style="color:var(--green)"></i>
+          </div>
+          <div>
+            <h2 class="feature-card-title">Image Performance Scan</h2>
+            <p class="feature-card-desc">Scan all images for missing alt text, oversized dimensions, large files, and format issues.</p>
+          </div>
+          <button id="runImageScan" class="scan-btn" style="margin-left:auto;flex-shrink:0">
+            <i class="fas fa-rotate"></i> Scan Images
+          </button>
+        </div>
+        <div id="image-scan-loading" style="display:none;padding:10px 0">
+          <div class="ghost-loading"><span class="spinner"></span> Scanning images...</div>
+          <div id="image-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div id="image-empty" class="empty-state">
+        <div class="empty-icon">🖼️</div>
+        <p class="empty-title">No image scan yet</p>
+        <p class="empty-sub">Click "Scan Images" to analyse your store's image performance.</p>
+      </div>
+
+      <div id="image-results" style="display:none">
+        <div class="img-overview-grid">
+          <div class="feature-card img-grade-card">
+            <p class="sidebar-label" style="text-align:center">Overall Score</p>
+            <div class="img-grade-circle" id="img-grade-circle"><span id="img-grade-letter">—</span></div>
+            <div id="img-score-number" style="font-family:var(--mono);font-size:28px;font-weight:500;text-align:center;margin-top:6px">—</div>
+            <div style="font-size:11px;color:var(--muted);text-align:center">/100</div>
+          </div>
+          <div class="img-stats-grid">
+            <div class="img-stat-card"><i class="fas fa-images img-stat-icon" style="color:var(--accent)"></i><div class="img-stat-val" id="istat-total-val">—</div><div class="img-stat-label">Total Images</div></div>
+            <div class="img-stat-card has-issue"><i class="fas fa-font img-stat-icon" style="color:var(--danger)"></i><div class="img-stat-val" id="istat-alt-val">—</div><div class="img-stat-label">Missing Alt Text</div></div>
+            <div class="img-stat-card has-issue"><i class="fas fa-expand img-stat-icon" style="color:var(--warn)"></i><div class="img-stat-val" id="istat-oversized-val">—</div><div class="img-stat-label">Oversized</div></div>
+            <div class="img-stat-card has-issue"><i class="fas fa-weight-hanging img-stat-icon" style="color:var(--warn)"></i><div class="img-stat-val" id="istat-large-val">—</div><div class="img-stat-label">Large Files</div></div>
+            <div class="img-stat-card has-issue"><i class="fas fa-file-image img-stat-icon" style="color:var(--muted)"></i><div class="img-stat-val" id="istat-format-val">—</div><div class="img-stat-label">Non-modern Format</div></div>
+          </div>
+        </div>
+
+        <div class="img-detail-grid">
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:16px">Potential Savings</h3>
+            <div id="img-savings-val" style="font-family:var(--mono);font-size:32px;font-weight:500;color:var(--green);margin-bottom:4px">—</div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Estimated reduction by optimising images</p>
+            <div class="savings-bar-wrap">
+              <div class="savings-bar-label"><span>Current total</span><span id="img-current-size">—</span></div>
+              <div class="savings-bar-track"><div class="savings-bar-fill" id="img-savings-bar" style="width:0%"></div></div>
+              <div class="savings-bar-label" style="margin-top:6px"><span>After optimisation</span><span id="img-after-size">—</span></div>
+            </div>
+          </div>
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:16px">Issue Breakdown</h3>
+            <div id="img-issue-breakdown"></div>
+          </div>
+        </div>
+
+        <div class="feature-card" style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+            <h3 class="feature-card-title">Image Audit</h3>
+            <div class="img-filter-pills" id="img-filter-pills">
+              <button class="filter-pill active" data-filter="all">All</button>
+              <button class="filter-pill" data-filter="missing-alt">Missing Alt</button>
+              <button class="filter-pill" data-filter="oversized">Oversized</button>
+              <button class="filter-pill" data-filter="non-modern">Non-modern</button>
+              <button class="filter-pill" data-filter="large-file">Large Files</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="data-table" id="img-audit-table">
+              <thead><tr><th>Image</th><th>Dimensions</th><th>Size</th><th>Format</th><th>Issues</th></tr></thead>
+              <tbody id="img-audit-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GHOST SCRIPTS -->
+  <div id="tab-ghost" class="tab-panel">
+    <div style="padding:24px 28px;max-width:900px;margin:0 auto">
+      <div class="feature-card" style="margin-bottom:20px">
+        <div class="feature-card-header">
+          <div class="feature-card-icon" style="background:rgba(244,63,94,.12)">
+            <i class="fas fa-ghost" style="color:var(--danger)"></i>
+          </div>
+          <div>
+            <h2 class="feature-card-title">Ghost Scripts</h2>
+            <p class="feature-card-desc">Detect scripts from uninstalled apps still loading in your theme. Requires Shopify Admin API in .env</p>
+          </div>
+          <button id="scan-ghost-code-btn" class="scan-btn" style="margin-left:auto;flex-shrink:0">
+            <i class="fas fa-magnifying-glass"></i> Scan Now
+          </button>
+        </div>
+        <div id="ghost-loading" style="display:none;padding:10px 0">
+          <div class="ghost-loading"><span class="spinner"></span> Analysing theme files...</div>
+          <div id="ghost-log-mini" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:80px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div id="ghost-empty" class="empty-state">
+        <div class="empty-icon">👻</div>
+        <p class="empty-title">No ghost scan yet</p>
+        <p class="empty-sub">Click "Scan Now" to check your theme for orphaned scripts.</p>
+      </div>
+
+      <div id="ghost-results" style="display:none">
+        <div class="ghost-stats-row">
+          <div class="ghost-stat-card danger"><div class="ghost-stat-val" id="ghost-count">0</div><div class="ghost-stat-label">Active Ghosts</div></div>
+          <div class="ghost-stat-card good"><div class="ghost-stat-val" id="ghost-ok">0</div><div class="ghost-stat-label">Installed (OK)</div></div>
+          <div class="ghost-stat-card neutral"><div class="ghost-stat-val" id="ghost-wasted" style="font-size:16px;color:var(--warn)">0 KB</div><div class="ghost-stat-label">Wasted Load</div></div>
+          <div class="ghost-stat-card neutral"><div class="ghost-stat-val" id="ghost-theme" style="font-size:12px">—</div><div class="ghost-stat-label">Theme Scanned</div></div>
+        </div>
+        <div id="ghost-alert" style="display:none" class="ghost-alert"></div>
+        <div id="ghost-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FONT OPTIMIZER -->
+  <div id="tab-fonts" class="tab-panel">
+    <div style="padding:24px 28px;max-width:1000px;margin:0 auto">
+      <div class="feature-card" style="margin-bottom:20px">
+        <div class="feature-card-header">
+          <div class="feature-card-icon" style="background:rgba(109,124,255,.12)">
+            <i class="fas fa-font" style="color:var(--accent)"></i>
+          </div>
+          <div>
+            <h2 class="feature-card-title">Font Optimizer</h2>
+            <p class="feature-card-desc">Analyse and optimise web fonts for faster load times. Detects Google Fonts, missing font-display, large files and preloading issues.</p>
+          </div>
+          <button id="runFontScan" class="scan-btn" style="margin-left:auto;flex-shrink:0">
+            <i class="fas fa-rotate"></i> Scan Fonts
+          </button>
+        </div>
+        <div id="font-scan-loading" style="display:none;padding:10px 0">
+          <div class="ghost-loading"><span class="spinner"></span> Analysing fonts...</div>
+          <div id="font-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div id="font-empty" class="empty-state">
+        <div class="empty-icon">🔤</div>
+        <p class="empty-title">No font scan yet</p>
+        <p class="empty-sub">Click "Scan Fonts" to analyse your store's font performance.</p>
+      </div>
+
+      <div id="font-results" style="display:none">
+        <!-- Score + Stats -->
+        <div class="img-overview-grid" style="margin-bottom:12px">
+          <div class="feature-card img-grade-card">
+            <p class="sidebar-label" style="text-align:center">Font Score</p>
+            <div class="img-grade-circle" id="font-grade-circle"><span id="font-grade-letter">—</span></div>
+            <div id="font-score-number" style="font-family:var(--mono);font-size:28px;font-weight:500;text-align:center;margin-top:6px">—</div>
+            <div style="font-size:11px;color:var(--muted);text-align:center">/100</div>
+          </div>
+          <div class="img-stats-grid">
+            <div class="img-stat-card"><i class="fas fa-font img-stat-icon" style="color:var(--accent)"></i><div class="img-stat-val" id="fstat-total">—</div><div class="img-stat-label">Total Fonts</div></div>
+            <div class="img-stat-card"><i class="fab fa-google img-stat-icon" style="color:var(--warn)"></i><div class="img-stat-val" id="fstat-google">—</div><div class="img-stat-label">Google Fonts</div></div>
+            <div class="img-stat-card"><i class="fas fa-server img-stat-icon" style="color:var(--green)"></i><div class="img-stat-val" id="fstat-self">—</div><div class="img-stat-label">Self-Hosted</div></div>
+            <div class="img-stat-card has-issue"><i class="fas fa-triangle-exclamation img-stat-icon" style="color:var(--danger)"></i><div class="img-stat-val" id="fstat-issues">—</div><div class="img-stat-label">Issues Found</div></div>
+            <div class="img-stat-card"><i class="fas fa-weight-hanging img-stat-icon" style="color:var(--muted)"></i><div class="img-stat-val" id="fstat-size">—</div><div class="img-stat-label">Total Size (KB)</div></div>
+          </div>
+        </div>
+
+        <!-- Issues + Recommendations -->
+        <div class="img-detail-grid" style="margin-bottom:12px">
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:14px">Issues Detected</h3>
+            <div id="font-issues-list"></div>
+          </div>
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3>
+            <div id="font-recommendations"></div>
+          </div>
+        </div>
+
+        <!-- Font Files Table -->
+        <div class="feature-card">
+          <h3 class="feature-card-title" style="margin-bottom:14px">Font Files</h3>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th>URL</th><th>Format</th><th>Size</th><th>Source</th><th>Status</th></tr></thead>
+              <tbody id="font-files-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Loaded Font Faces -->
+        <div class="feature-card" style="margin-top:12px">
+          <h3 class="feature-card-title" style="margin-bottom:14px">Loaded Font Faces</h3>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th>Family</th><th>Weight</th><th>Style</th><th>Status</th></tr></thead>
+              <tbody id="font-faces-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CSS ANALYSIS -->
+  <div id="tab-css" class="tab-panel">
+    <div style="padding:24px 28px;max-width:1100px;margin:0 auto">
+      <div class="feature-card" style="margin-bottom:20px">
+        <div class="feature-card-header">
+          <div class="feature-card-icon" style="background:rgba(245,158,11,.12)">
+            <i class="fas fa-code" style="color:var(--warn)"></i>
+          </div>
+          <div>
+            <h2 class="feature-card-title">CSS Analysis</h2>
+            <p class="feature-card-desc">Deep-analyse your theme's CSS for unused rules and optimization opportunities using Chrome Coverage API.</p>
+          </div>
+          <button id="runCssScan" class="scan-btn" style="margin-left:auto;flex-shrink:0">
+            <i class="fas fa-rotate"></i> Analyse CSS
+          </button>
+        </div>
+        <!-- Inline metrics preview bar (like SpeedScope) -->
+        <div id="css-topbar-metrics" style="display:none;margin-top:12px">
+          <div class="css-metrics-bar">
+            <div class="css-metric-item"><span class="css-metric-label">Total CSS Size</span><span class="css-metric-val" id="css-bar-size">—</span></div>
+            <div class="css-metric-sep"></div>
+            <div class="css-metric-item"><span class="css-metric-label">Total Rules</span><span class="css-metric-val" id="css-bar-rules">—</span></div>
+            <div class="css-metric-sep"></div>
+            <div class="css-metric-item"><span class="css-metric-label">Potentially Unused</span><span class="css-metric-val warn" id="css-bar-unused">—</span></div>
+            <div class="css-metric-sep"></div>
+            <div class="css-metric-item"><span class="css-metric-label">Potential Savings</span><span class="css-metric-val" style="color:var(--green)" id="css-bar-savings">—</span></div>
+          </div>
+        </div>
+        <div id="css-scan-loading" style="display:none;padding:10px 0">
+          <div class="ghost-loading"><span class="spinner"></span> Analysing CSS coverage...</div>
+          <div id="css-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div id="css-empty" class="empty-state">
+        <div class="empty-icon">🎨</div>
+        <p class="empty-title">No CSS analysis yet</p>
+        <p class="empty-sub">Click "Analyse CSS" to check your store's CSS usage.</p>
+      </div>
+
+      <div id="css-results" style="display:none">
+        <!-- Score row -->
+        <div class="css-score-row">
+          <div class="feature-card css-score-card">
+            <p class="sidebar-label">CSS Score</p>
+            <div class="img-grade-circle" id="css-grade-circle"><span id="css-grade-letter">—</span></div>
+            <div id="css-score-number" style="font-family:var(--mono);font-size:24px;font-weight:500;text-align:center;margin-top:4px">—</div>
+          </div>
+          <div class="feature-card css-score-card">
+            <p class="sidebar-label">Total Size</p>
+            <div id="css-stat-size" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
+            <div style="font-size:11px;color:var(--muted)">across all CSS files</div>
+          </div>
+          <div class="feature-card css-score-card">
+            <p class="sidebar-label">Total Rules</p>
+            <div id="css-stat-rules" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
+            <div style="font-size:11px;color:var(--muted)">CSS rules found</div>
+          </div>
+          <div class="feature-card css-score-card">
+            <p class="sidebar-label">Potentially Unused</p>
+            <div id="css-stat-unused" class="warn" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
+            <div style="font-size:11px;color:var(--muted)">of CSS unused</div>
+          </div>
+          <div class="feature-card css-score-card">
+            <p class="sidebar-label">Potential Savings</p>
+            <div id="css-stat-savings" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px;color:var(--green)">—</div>
+            <div style="font-size:11px;color:var(--muted)">can be removed</div>
+          </div>
+        </div>
+
+        <!-- Savings visual + Recommendations -->
+        <div class="img-detail-grid" style="margin-bottom:12px">
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:14px">Size Breakdown</h3>
+            <div class="savings-bar-wrap">
+              <div class="savings-bar-label"><span>Current size</span><span id="css-current-size">—</span></div>
+              <div class="savings-bar-track" style="height:12px;margin:8px 0">
+                <div class="savings-bar-fill" id="css-savings-bar" style="width:100%;background:var(--warn)"></div>
+              </div>
+              <div class="savings-bar-label"><span>Used CSS</span><span id="css-after-size">—</span></div>
+            </div>
+            <div style="margin-top:14px">
+              <div class="img-issue-row"><span>Blocking stylesheets</span><span class="img-issue-count" id="css-blocking" style="color:var(--warn)">—</span></div>
+              <div class="img-issue-row"><span>Inline styles on elements</span><span class="img-issue-count" id="css-inline">—</span></div>
+              <div class="img-issue-row"><span>Inline &lt;style&gt; blocks size</span><span class="img-issue-count" id="css-inline-size">—</span></div>
+            </div>
+          </div>
+          <div class="feature-card">
+            <h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3>
+            <div id="css-recommendations"></div>
+          </div>
+        </div>
+
+        <!-- CSS File Breakdown Table -->
+        <div class="feature-card">
+          <h3 class="feature-card-title" style="margin-bottom:14px">CSS File Usage</h3>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th>File</th><th>Size</th><th>Rules</th><th>Unused %</th><th>Savings</th></tr></thead>
+              <tbody id="css-files-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div id="tab-history" class="tab-panel">
+    <div style="padding:24px 28px;max-width:900px;margin:0 auto">
+      <div class="results-header" style="margin-bottom:20px">
+        <span class="results-title">Scan History</span>
+        <button id="clearHistoryBtn" class="secondary-btn"><i class="fas fa-trash-can"></i> Clear</button>
+      </div>
+      <div id="history-empty" class="empty-state">
+        <div class="empty-icon">📈</div>
+        <p class="empty-title">No history yet</p>
+        <p class="empty-sub">Each scan you run is saved here automatically.</p>
+      </div>
+      <div id="history-content" style="display:none">
+        <div class="kpi-grid" id="kpi-grid"></div>
+        <div class="chart-card"><canvas id="scoresChart" height="200"></canvas></div>
+        <div class="chart-card"><canvas id="vitalsChart" height="200"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="client.js"></script>
 </body>
 </html>
