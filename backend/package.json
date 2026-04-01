@@ -19,3 +19,7 @@
     "puppeteer": "^24.40.0"
   }
 }
+"scripts": {
+  "start": "node server.js",
+  "build": "npm install && # install puppeteer and its dependencies"
+},
