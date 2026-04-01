@@ -113,9 +113,14 @@ function buildAppPerfMap(audits, fingerprintMap) {
 
 function launchBrowser() {
   return puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
-           '--disable-gpu','--disable-ipv6','--proxy-server=direct://','--proxy-bypass-list=*']
+    headless: "new",
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Render automatically set karega
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
   });
 }
 
