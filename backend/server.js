@@ -10,6 +10,8 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 dotenv.config();
 
+
+const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
@@ -27,6 +29,14 @@ let FINGERPRINT_DB = {};
     console.log('[Server] Fingerprint DB loaded.');
   } catch (e) { console.error('[Server] Failed to load fingerprint DB:', e.message); }
 })();
+
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "frame-ancestors https://admin.shopify.com https://*.myshopify.com;"
+  );
+  next();
+});
 
 function buildFingerprintMap() {
   const map = new Map();
