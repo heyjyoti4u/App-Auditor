@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -8,11 +8,191 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
- <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
- </head>
+<style>
+/* ── AUTO-SCAN OVERLAY ── */
+.autoscan-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0;
+}
+.autoscan-inner {
+  width: 100%;
+  max-width: 420px;
+  padding: 0 24px;
+}
+.autoscan-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: .1em;
+  color: var(--text);
+  margin-bottom: 32px;
+}
+.autoscan-brand .brand-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+.autoscan-store {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.autoscan-store-label {
+  font-size: 11px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.autoscan-store-url {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent);
+  word-break: break-all;
+}
+.autoscan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--green);
+  font-family: var(--mono);
+  margin-top: 10px;
+}
+.autoscan-status.warn { color: var(--warn); }
+/* Password modal card */
+.pwd-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin-bottom: 16px;
+}
+.pwd-card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.pwd-card p {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 16px;
+  line-height: 1.55;
+}
+.pwd-input-row {
+  display: flex;
+  gap: 10px;
+}
+.pwd-input-row .url-input {
+  flex: 1;
+  width: auto;
+}
+.autoscan-scanning {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  text-align: center;
+}
+.autoscan-scanning .spinner {
+  width: 20px; height: 20px;
+  border-width: 2px;
+  margin: 0 auto 12px;
+  display: block;
+}
+.autoscan-scanning p {
+  font-size: 13px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+/* Token missing warning */
+.token-warn {
+  background: var(--warn-bg);
+  border: 1px solid rgba(245,158,11,.3);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--warn);
+  font-family: var(--mono);
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+/* Store URL display in topbar */
+.store-display {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
+</head>
 <body>
 
-<header class="topbar">
+<!-- AUTO-SCAN OVERLAY: shown until scan completes -->
+<div id="autoscan-overlay" class="autoscan-overlay">
+  <div class="autoscan-inner">
+    <div class="autoscan-brand"><span class="brand-dot"></span>APP AUDITOR</div>
+
+    <div class="autoscan-store" id="overlay-store-card">
+      <div class="autoscan-store-label">Scanning store</div>
+      <div class="autoscan-store-url" id="overlay-store-url">Detecting...</div>
+      <div class="autoscan-status" id="overlay-status">
+        <span class="spinner" style="width:10px;height:10px;border-width:1.5px"></span>
+        <span>Loading store info...</span>
+      </div>
+    </div>
+
+    <!-- Password prompt — hidden until needed -->
+    <div id="overlay-pwd-section" style="display:none">
+      <div class="pwd-card">
+        <h3>🔒 Password Protected Store</h3>
+        <p>This store is password-protected. Enter the storefront password to continue the scan.</p>
+        <div class="pwd-input-row">
+          <input id="overlayPassword" class="url-input" type="password" placeholder="Enter store password" autocomplete="off" style="font-size:13px">
+          <button id="overlayPwdSubmit" class="scan-btn">
+            <i class="fas fa-arrow-right"></i> Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Token missing warning -->
+    <div id="overlay-token-warn" class="token-warn" style="display:none">
+      ⚠️ No Admin Token configured on server. Add <code>SHOPIFY_ADMIN_TOKEN</code> to your .env for 100% accurate app detection.
+    </div>
+
+    <!-- Scanning state -->
+    <div id="overlay-scanning" class="autoscan-scanning" style="display:none">
+      <span class="spinner"></span>
+      <p id="overlay-scan-msg">Starting scan...</p>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP (hidden until scan completes) -->
+<header class="topbar" style="display:none" id="main-topbar">
   <div class="topbar-brand"><span class="brand-dot"></span>APP AUDITOR</div>
   <nav class="topbar-tabs">
     <button class="tab active" data-tab="overview">Overview</button>
@@ -24,22 +204,30 @@
     <button class="tab" data-tab="css">CSS Analysis</button>
     <button class="tab" data-tab="history">History</button>
   </nav>
-<div class="topbar-actions">
-    <input id="storeUrl" class="url-input" type="text" placeholder="store.myshopify.com"/>
-    <input id="adminToken" class="url-input" type="password" placeholder="shpat_..." style="width:160px;"/>
-    <button id="scanButton" class="scan-btn"><i class="fas fa-search"></i> Scan</button>
+  <div class="topbar-actions">
+    <span class="store-display" id="topbar-store-url" title=""></span>
+    <button id="rescanButton" class="scan-btn" style="padding:6px 12px;font-size:12px">
+      <i class="fas fa-rotate"></i> Re-scan
+    </button>
   </div>
 </header>
 
-<div class="options-bar">
+<div class="options-bar" style="display:none" id="main-options-bar">
   <label class="option-toggle"><input type="checkbox" id="toggleApps" checked><span class="toggle-track"></span>App Scan</label>
   <label class="option-toggle"><input type="checkbox" id="togglePerformance" checked><span class="toggle-track"></span>Performance</label>
-  <label class="option-toggle"><input type="radio" name="storeType" id="liveStore" value="live" checked>Live store</label>
-  <label class="option-toggle"><input type="radio" name="storeType" id="protectedStore" value="protected">Password protected</label>
-  <div id="passwordGroup" class="password-group disabled">
-    <input id="storePassword" type="password" class="url-input" placeholder="Store password" style="width:160px">
+  <!-- Password protected toggle — shown after first scan if needed -->
+  <div id="pwdToggleGroup" style="display:none;align-items:center;gap:8px">
+    <label class="option-toggle"><input type="radio" name="storeType" id="liveStore" value="live" checked>Live store</label>
+    <label class="option-toggle"><input type="radio" name="storeType" id="protectedStore" value="protected">Password protected</label>
+    <div id="passwordGroup" class="password-group disabled">
+      <input id="storePassword" type="password" class="url-input" placeholder="Store password" style="width:150px">
+    </div>
   </div>
 </div>
+
+<!-- Hidden state fields (set by JS, used by scan functions) -->
+<input type="hidden" id="storeUrl" value="">
+<input type="hidden" id="adminToken" value="">
 
 <div id="loading-placeholder" class="loading-screen" style="display:none">
   <div class="terminal-wrap">
@@ -103,7 +291,7 @@
         <div id="overview-empty" class="empty-state">
           <div class="empty-icon">◈</div>
           <p class="empty-title">No scan yet</p>
-          <p class="empty-sub">Enter a store URL above and hit Scan.</p>
+          <p class="empty-sub">Scan will start automatically.</p>
         </div>
         <div id="overview-results" style="display:none">
           <div class="results-header">
@@ -113,9 +301,9 @@
             </div>
             <div class="sort-bar">
               <span class="sort-label">Sort:</span>
-              <button class="sort-btn active" data-sort="size">Size</button>
+              <button class="sort-btn" data-sort="size">Size</button>
               <button class="sort-btn" data-sort="time">Load time</button>
-              <button class="sort-btn" data-sort="impact">Impact</button>
+              <button class="sort-btn active" data-sort="impact">Impact</button>
             </div>
           </div>
           <div id="insight-banner" class="insight-banner" style="display:none"></div>
@@ -147,7 +335,7 @@
           </div>
           <div>
             <h2 class="feature-card-title">Run Speed Test</h2>
-            <p class="feature-card-desc">Test your store's Core Web Vitals and page load performance. Runs Lighthouse independently — does not re-scan apps.</p>
+            <p class="feature-card-desc">Test Core Web Vitals and page load performance using Lighthouse.</p>
           </div>
         </div>
         <div class="device-toggle-row">
@@ -162,7 +350,7 @@
           <div id="speed-test-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
         </div>
       </div>
-      <div id="speed-result-card" style="display:none" class="feature-card" id="speed-result-display">
+      <div id="speed-result-card" style="display:none" class="feature-card">
         <h3 class="feature-card-title" style="margin-bottom:16px">Latest Result</h3>
         <div id="speed-result-content"></div>
       </div>
@@ -199,13 +387,7 @@
           <div id="image-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
         </div>
       </div>
-
-      <div id="image-empty" class="empty-state">
-        <div class="empty-icon">🖼️</div>
-        <p class="empty-title">No image scan yet</p>
-        <p class="empty-sub">Click "Scan Images" to analyse your store's image performance.</p>
-      </div>
-
+      <div id="image-empty" class="empty-state"><div class="empty-icon">🖼️</div><p class="empty-title">No image scan yet</p><p class="empty-sub">Click "Scan Images" to analyse your store's image performance.</p></div>
       <div id="image-results" style="display:none">
         <div class="img-overview-grid">
           <div class="feature-card img-grade-card">
@@ -222,12 +404,11 @@
             <div class="img-stat-card has-issue"><i class="fas fa-file-image img-stat-icon" style="color:var(--muted)"></i><div class="img-stat-val" id="istat-format-val">—</div><div class="img-stat-label">Non-modern Format</div></div>
           </div>
         </div>
-
         <div class="img-detail-grid">
           <div class="feature-card">
             <h3 class="feature-card-title" style="margin-bottom:16px">Potential Savings</h3>
             <div id="img-savings-val" style="font-family:var(--mono);font-size:32px;font-weight:500;color:var(--green);margin-bottom:4px">—</div>
-            <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Estimated reduction by optimising images</p>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Estimated by optimising images</p>
             <div class="savings-bar-wrap">
               <div class="savings-bar-label"><span>Current total</span><span id="img-current-size">—</span></div>
               <div class="savings-bar-track"><div class="savings-bar-fill" id="img-savings-bar" style="width:0%"></div></div>
@@ -239,7 +420,6 @@
             <div id="img-issue-breakdown"></div>
           </div>
         </div>
-
         <div class="feature-card" style="margin-top:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
             <h3 class="feature-card-title">Image Audit</h3>
@@ -252,10 +432,7 @@
             </div>
           </div>
           <div style="overflow-x:auto">
-            <table class="data-table" id="img-audit-table">
-              <thead><tr><th>Image</th><th>Dimensions</th><th>Size</th><th>Format</th><th>Issues</th></tr></thead>
-              <tbody id="img-audit-tbody"></tbody>
-            </table>
+            <table class="data-table"><thead><tr><th>Image</th><th>Dimensions</th><th>Size</th><th>Format</th><th>Issues</th></tr></thead><tbody id="img-audit-tbody"></tbody></table>
           </div>
         </div>
       </div>
@@ -272,7 +449,7 @@
           </div>
           <div>
             <h2 class="feature-card-title">Ghost Scripts</h2>
-            <p class="feature-card-desc">Detect scripts from uninstalled apps still loading in your theme. Requires Shopify Admin API in .env</p>
+            <p class="feature-card-desc">Detect scripts from uninstalled apps still loading in your theme.</p>
           </div>
           <button id="scan-ghost-code-btn" class="scan-btn" style="margin-left:auto;flex-shrink:0">
             <i class="fas fa-magnifying-glass"></i> Scan Now
@@ -283,13 +460,7 @@
           <div id="ghost-log-mini" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:80px;overflow-y:auto"></div>
         </div>
       </div>
-
-      <div id="ghost-empty" class="empty-state">
-        <div class="empty-icon">👻</div>
-        <p class="empty-title">No ghost scan yet</p>
-        <p class="empty-sub">Click "Scan Now" to check your theme for orphaned scripts.</p>
-      </div>
-
+      <div id="ghost-empty" class="empty-state"><div class="empty-icon">👻</div><p class="empty-title">No ghost scan yet</p><p class="empty-sub">Click "Scan Now" to check your theme for orphaned scripts.</p></div>
       <div id="ghost-results" style="display:none">
         <div class="ghost-stats-row">
           <div class="ghost-stat-card danger"><div class="ghost-stat-val" id="ghost-count">0</div><div class="ghost-stat-label">Active Ghosts</div></div>
@@ -313,7 +484,7 @@
           </div>
           <div>
             <h2 class="feature-card-title">Font Optimizer</h2>
-            <p class="feature-card-desc">Analyse and optimise web fonts for faster load times. Detects Google Fonts, missing font-display, large files and preloading issues.</p>
+            <p class="feature-card-desc">Analyse web fonts for load performance issues.</p>
           </div>
           <button id="runFontScan" class="scan-btn" style="margin-left:auto;flex-shrink:0">
             <i class="fas fa-rotate"></i> Scan Fonts
@@ -324,15 +495,8 @@
           <div id="font-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
         </div>
       </div>
-
-      <div id="font-empty" class="empty-state">
-        <div class="empty-icon">🔤</div>
-        <p class="empty-title">No font scan yet</p>
-        <p class="empty-sub">Click "Scan Fonts" to analyse your store's font performance.</p>
-      </div>
-
+      <div id="font-empty" class="empty-state"><div class="empty-icon">🔤</div><p class="empty-title">No font scan yet</p><p class="empty-sub">Click "Scan Fonts" to analyse your store's font performance.</p></div>
       <div id="font-results" style="display:none">
-        <!-- Score + Stats -->
         <div class="img-overview-grid" style="margin-bottom:12px">
           <div class="feature-card img-grade-card">
             <p class="sidebar-label" style="text-align:center">Font Score</p>
@@ -348,40 +512,12 @@
             <div class="img-stat-card"><i class="fas fa-weight-hanging img-stat-icon" style="color:var(--muted)"></i><div class="img-stat-val" id="fstat-size">—</div><div class="img-stat-label">Total Size (KB)</div></div>
           </div>
         </div>
-
-        <!-- Issues + Recommendations -->
         <div class="img-detail-grid" style="margin-bottom:12px">
-          <div class="feature-card">
-            <h3 class="feature-card-title" style="margin-bottom:14px">Issues Detected</h3>
-            <div id="font-issues-list"></div>
-          </div>
-          <div class="feature-card">
-            <h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3>
-            <div id="font-recommendations"></div>
-          </div>
+          <div class="feature-card"><h3 class="feature-card-title" style="margin-bottom:14px">Issues Detected</h3><div id="font-issues-list"></div></div>
+          <div class="feature-card"><h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3><div id="font-recommendations"></div></div>
         </div>
-
-        <!-- Font Files Table -->
-        <div class="feature-card">
-          <h3 class="feature-card-title" style="margin-bottom:14px">Font Files</h3>
-          <div style="overflow-x:auto">
-            <table class="data-table">
-              <thead><tr><th>URL</th><th>Format</th><th>Size</th><th>Source</th><th>Status</th></tr></thead>
-              <tbody id="font-files-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Loaded Font Faces -->
-        <div class="feature-card" style="margin-top:12px">
-          <h3 class="feature-card-title" style="margin-bottom:14px">Loaded Font Faces</h3>
-          <div style="overflow-x:auto">
-            <table class="data-table">
-              <thead><tr><th>Family</th><th>Weight</th><th>Style</th><th>Status</th></tr></thead>
-              <tbody id="font-faces-tbody"></tbody>
-            </table>
-          </div>
-        </div>
+        <div class="feature-card"><h3 class="feature-card-title" style="margin-bottom:14px">Font Files</h3><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>URL</th><th>Format</th><th>Size</th><th>Source</th><th>Status</th></tr></thead><tbody id="font-files-tbody"></tbody></table></div></div>
+        <div class="feature-card" style="margin-top:12px"><h3 class="feature-card-title" style="margin-bottom:14px">Loaded Font Faces</h3><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Family</th><th>Weight</th><th>Style</th><th>Status</th></tr></thead><tbody id="font-faces-tbody"></tbody></table></div></div>
       </div>
     </div>
   </div>
@@ -396,13 +532,12 @@
           </div>
           <div>
             <h2 class="feature-card-title">CSS Analysis</h2>
-            <p class="feature-card-desc">Deep-analyse your theme's CSS for unused rules and optimization opportunities using Chrome Coverage API.</p>
+            <p class="feature-card-desc">Deep-analyse CSS for unused rules using Chrome Coverage API.</p>
           </div>
           <button id="runCssScan" class="scan-btn" style="margin-left:auto;flex-shrink:0">
             <i class="fas fa-rotate"></i> Analyse CSS
           </button>
         </div>
-        <!-- Inline metrics preview bar (like SpeedScope) -->
         <div id="css-topbar-metrics" style="display:none;margin-top:12px">
           <div class="css-metrics-bar">
             <div class="css-metric-item"><span class="css-metric-label">Total CSS Size</span><span class="css-metric-val" id="css-bar-size">—</span></div>
@@ -419,52 +554,21 @@
           <div id="css-scan-log" style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-top:8px;max-height:70px;overflow-y:auto"></div>
         </div>
       </div>
-
-      <div id="css-empty" class="empty-state">
-        <div class="empty-icon">🎨</div>
-        <p class="empty-title">No CSS analysis yet</p>
-        <p class="empty-sub">Click "Analyse CSS" to check your store's CSS usage.</p>
-      </div>
-
+      <div id="css-empty" class="empty-state"><div class="empty-icon">🎨</div><p class="empty-title">No CSS analysis yet</p><p class="empty-sub">Click "Analyse CSS" to check your store's CSS usage.</p></div>
       <div id="css-results" style="display:none">
-        <!-- Score row -->
         <div class="css-score-row">
-          <div class="feature-card css-score-card">
-            <p class="sidebar-label">CSS Score</p>
-            <div class="img-grade-circle" id="css-grade-circle"><span id="css-grade-letter">—</span></div>
-            <div id="css-score-number" style="font-family:var(--mono);font-size:24px;font-weight:500;text-align:center;margin-top:4px">—</div>
-          </div>
-          <div class="feature-card css-score-card">
-            <p class="sidebar-label">Total Size</p>
-            <div id="css-stat-size" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
-            <div style="font-size:11px;color:var(--muted)">across all CSS files</div>
-          </div>
-          <div class="feature-card css-score-card">
-            <p class="sidebar-label">Total Rules</p>
-            <div id="css-stat-rules" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
-            <div style="font-size:11px;color:var(--muted)">CSS rules found</div>
-          </div>
-          <div class="feature-card css-score-card">
-            <p class="sidebar-label">Potentially Unused</p>
-            <div id="css-stat-unused" class="warn" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div>
-            <div style="font-size:11px;color:var(--muted)">of CSS unused</div>
-          </div>
-          <div class="feature-card css-score-card">
-            <p class="sidebar-label">Potential Savings</p>
-            <div id="css-stat-savings" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px;color:var(--green)">—</div>
-            <div style="font-size:11px;color:var(--muted)">can be removed</div>
-          </div>
+          <div class="feature-card css-score-card"><p class="sidebar-label">CSS Score</p><div class="img-grade-circle" id="css-grade-circle"><span id="css-grade-letter">—</span></div><div id="css-score-number" style="font-family:var(--mono);font-size:24px;font-weight:500;text-align:center;margin-top:4px">—</div></div>
+          <div class="feature-card css-score-card"><p class="sidebar-label">Total Size</p><div id="css-stat-size" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div><div style="font-size:11px;color:var(--muted)">across all CSS files</div></div>
+          <div class="feature-card css-score-card"><p class="sidebar-label">Total Rules</p><div id="css-stat-rules" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div><div style="font-size:11px;color:var(--muted)">CSS rules found</div></div>
+          <div class="feature-card css-score-card"><p class="sidebar-label">Potentially Unused</p><div id="css-stat-unused" class="warn" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px">—</div><div style="font-size:11px;color:var(--muted)">of CSS unused</div></div>
+          <div class="feature-card css-score-card"><p class="sidebar-label">Potential Savings</p><div id="css-stat-savings" style="font-family:var(--mono);font-size:26px;font-weight:500;margin-top:8px;color:var(--green)">—</div><div style="font-size:11px;color:var(--muted)">can be removed</div></div>
         </div>
-
-        <!-- Savings visual + Recommendations -->
         <div class="img-detail-grid" style="margin-bottom:12px">
           <div class="feature-card">
             <h3 class="feature-card-title" style="margin-bottom:14px">Size Breakdown</h3>
             <div class="savings-bar-wrap">
               <div class="savings-bar-label"><span>Current size</span><span id="css-current-size">—</span></div>
-              <div class="savings-bar-track" style="height:12px;margin:8px 0">
-                <div class="savings-bar-fill" id="css-savings-bar" style="width:100%;background:var(--warn)"></div>
-              </div>
+              <div class="savings-bar-track" style="height:12px;margin:8px 0"><div class="savings-bar-fill" id="css-savings-bar" style="width:100%;background:var(--warn)"></div></div>
               <div class="savings-bar-label"><span>Used CSS</span><span id="css-after-size">—</span></div>
             </div>
             <div style="margin-top:14px">
@@ -473,22 +577,9 @@
               <div class="img-issue-row"><span>Inline &lt;style&gt; blocks size</span><span class="img-issue-count" id="css-inline-size">—</span></div>
             </div>
           </div>
-          <div class="feature-card">
-            <h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3>
-            <div id="css-recommendations"></div>
-          </div>
+          <div class="feature-card"><h3 class="feature-card-title" style="margin-bottom:14px">Recommendations</h3><div id="css-recommendations"></div></div>
         </div>
-
-        <!-- CSS File Breakdown Table -->
-        <div class="feature-card">
-          <h3 class="feature-card-title" style="margin-bottom:14px">CSS File Usage</h3>
-          <div style="overflow-x:auto">
-            <table class="data-table">
-              <thead><tr><th>File</th><th>Size</th><th>Rules</th><th>Unused %</th><th>Savings</th></tr></thead>
-              <tbody id="css-files-tbody"></tbody>
-            </table>
-          </div>
-        </div>
+        <div class="feature-card"><h3 class="feature-card-title" style="margin-bottom:14px">CSS File Usage</h3><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>File</th><th>Size</th><th>Rules</th><th>Unused %</th><th>Savings</th></tr></thead><tbody id="css-files-tbody"></tbody></table></div></div>
       </div>
     </div>
   </div>
@@ -500,11 +591,7 @@
         <span class="results-title">Scan History</span>
         <button id="clearHistoryBtn" class="secondary-btn"><i class="fas fa-trash-can"></i> Clear</button>
       </div>
-      <div id="history-empty" class="empty-state">
-        <div class="empty-icon">📈</div>
-        <p class="empty-title">No history yet</p>
-        <p class="empty-sub">Each scan you run is saved here automatically.</p>
-      </div>
+      <div id="history-empty" class="empty-state"><div class="empty-icon">📈</div><p class="empty-title">No history yet</p><p class="empty-sub">Each scan you run is saved here automatically.</p></div>
       <div id="history-content" style="display:none">
         <div class="kpi-grid" id="kpi-grid"></div>
         <div class="chart-card"><canvas id="scoresChart" height="200"></canvas></div>
