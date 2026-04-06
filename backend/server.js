@@ -10,7 +10,6 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 dotenv.config();
 
-
 const app = express();
 const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
@@ -30,10 +29,7 @@ let FINGERPRINT_DB = {};
 })();
 
 app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "frame-ancestors https://admin.shopify.com https://*.myshopify.com;"
-  );
+  res.setHeader("Content-Security-Policy", "frame-ancestors https://admin.shopify.com https://*.myshopify.com;");
   next();
 });
 
@@ -123,13 +119,8 @@ function buildAppPerfMap(audits, fingerprintMap) {
 function launchBrowser() {
   return puppeteer.launch({
     headless: "new",
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Render automatically set karega
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu'
-    ]
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
+    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu']
   });
 }
 
@@ -137,15 +128,11 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
 
 // ── SSE HELPERS ──────────────────────────────────────────
-
-// FIX 1: Heartbeat — prevents connection timeout during long scans
 function startHeartbeat(res, intervalMs = 15000) {
   const interval = setInterval(() => {
     if (res.writableEnded) { clearInterval(interval); return; }
-    try {
-      res.write(': heartbeat\n\n');
-      if (typeof res.flush === 'function') res.flush();
-    } catch { clearInterval(interval); }
+    try { res.write(': heartbeat\n\n'); if (typeof res.flush === 'function') res.flush(); }
+    catch { clearInterval(interval); }
   }, intervalMs);
   return interval;
 }
@@ -154,21 +141,15 @@ function sseHeaders(res, req) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // disables nginx buffering
-  if (req?.socket) {
-    req.socket.setTimeout(0);
-    req.socket.setNoDelay(true);
-    req.socket.setKeepAlive(true, 0);
-  }
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (req?.socket) { req.socket.setTimeout(0); req.socket.setNoDelay(true); req.socket.setKeepAlive(true, 0); }
   res.flushHeaders();
 }
 
 const sendSse = (res, event, data) => {
   if (res.writableEnded) return;
-  try {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    if (typeof res.flush === 'function') res.flush();
-  } catch {}
+  try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); if (typeof res.flush === 'function') res.flush(); }
+  catch {}
 };
 
 async function handleStorePassword(page, storePassword) {
@@ -245,18 +226,13 @@ function getDefaultRecommendation(cat) {
   return recs[cat] || "Monitor this app's impact and remove if no longer needed.";
 }
 
-// FIX 2: Shopify paginated fetch helper
 async function shopifyGetAllPages(baseUrl, token, dataKey) {
   const all = [];
   let nextUrl = baseUrl;
   while (nextUrl) {
-    const res = await axios.get(nextUrl, {
-      headers: { 'X-Shopify-Access-Token': token },
-      timeout: 30000,
-    });
+    const res = await axios.get(nextUrl, { headers: { 'X-Shopify-Access-Token': token }, timeout: 30000 });
     const items = res.data?.[dataKey] || [];
     all.push(...items);
-    // Parse Link header for next page
     const linkHeader = res.headers['link'] || '';
     const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
     nextUrl = match ? match[1] : null;
@@ -265,10 +241,31 @@ async function shopifyGetAllPages(baseUrl, token, dataKey) {
 }
 
 // ════════════════════════════════════════════════════════
-// /scan-apps-api — Admin API app list
+// /init — Returns store context (shop hostname + token status)
+// Called by frontend on page load to auto-populate fields
+// ════════════════════════════════════════════════════════
+app.get('/init', (req, res) => {
+  // shop param comes from Shopify when embedded: ?shop=mystore.myshopify.com
+  const shopParam = req.query.shop || '';
+  const host      = shopParam || ENV_STORE_URL || '';
+
+  // Normalize to just the hostname
+  let storeHostname = host;
+  try { storeHostname = new URL(normalizeUrl(host)).hostname; } catch { storeHostname = host; }
+
+  res.json({
+    storeUrl:   storeHostname ? `https://${storeHostname}` : '',
+    hasToken:   !!(req.query.token || ENV_ADMIN_TOKEN),
+    // Never send the actual token to the client — it stays server-side
+  });
+});
+
+// ════════════════════════════════════════════════════════
+// /scan-apps-api — Admin API app list (server uses its own token)
 // ════════════════════════════════════════════════════════
 app.get('/scan-apps-api', async (req, res) => {
   const { storeUrl } = req.query;
+  // Priority: query param token (from OAuth) > env token
   const token = req.query.adminToken || ENV_ADMIN_TOKEN;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
 
@@ -278,7 +275,7 @@ app.get('/scan-apps-api', async (req, res) => {
 
   try {
     const host = extractHostname(storeUrl);
-    if (!token) throw new Error('No Admin Token provided. Enter shpat_... in the token field.');
+    if (!token) throw new Error('No Admin Token available. Set SHOPIFY_ADMIN_TOKEN in .env');
 
     log('[Apps API] Connecting to Shopify Admin API...', 'info');
 
@@ -500,7 +497,6 @@ app.get('/scan-speed', async (req, res) => {
     };
     const perfReport = { success:true, metrics, categories, audits, culprits: findCulprits(audits, fingerprintMap) };
 
-    // Build per-app perf map and send to client for merging
     const appPerfMap = buildAppPerfMap(audits, fingerprintMap);
     sendSse(res, 'speedResult', perfReport);
 
@@ -530,7 +526,7 @@ app.get('/scan-speed', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
-// /scan-images — FIXED: full pagination + ALL images returned
+// /scan-images
 // ════════════════════════════════════════════════════════
 app.get('/scan-images', async (req, res) => {
   const { storeUrl, storePassword } = req.query;
@@ -546,60 +542,34 @@ app.get('/scan-images', async (req, res) => {
   let browser, errorOccurred = false;
 
   try {
-    // ── STEP 1: Shopify Admin API — ALL products with FULL pagination ──
     let apiProductImages = [];
     if (token) {
-      log('[Images] Fetching ALL product images via Admin API (paginated)...');
+      log('[Images] Fetching ALL product images via Admin API...');
       try {
-        // FIX: Use paginated fetch to get ALL products, not just first 250
         const allProducts = await shopifyGetAllPages(
           `https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`,
-          token,
-          'products'
+          token, 'products'
         );
         for (const product of allProducts) {
           for (const img of product.images || []) {
-            if (img.src) {
-              apiProductImages.push({
-                src:          img.src,
-                alt:          img.alt || '',
-                hasAlt:       !!(img.alt || '').trim(),
-                productId:    product.id,
-                productTitle: product.title,
-                fromApi:      true,
-                naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0,
-              });
-            }
+            if (img.src) apiProductImages.push({ src: img.src, alt: img.alt || '', hasAlt: !!(img.alt || '').trim(), productId: product.id, productTitle: product.title, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
           }
         }
         log(`[Images] API: ${apiProductImages.length} product images from ${allProducts.length} products.`);
-      } catch (apiErr) {
-        log(`[Images] API image fetch failed: ${apiErr.message}. Will use DOM scan only.`);
-      }
+      } catch (apiErr) { log(`[Images] API fetch failed: ${apiErr.message}. DOM scan only.`); }
 
-      // ── Fetch collection images too via API ────────────────
       try {
         const allCollections = await shopifyGetAllPages(
           `https://${hostname}/admin/api/2024-01/custom_collections.json?fields=id,title,image&limit=250`,
-          token,
-          'custom_collections'
+          token, 'custom_collections'
         );
         for (const col of allCollections) {
-          if (col.image?.src) {
-            apiProductImages.push({
-              src: col.image.src, alt: col.image.alt || col.title || '',
-              hasAlt: !!(col.image.alt || '').trim(),
-              productTitle: `Collection: ${col.title}`,
-              fromApi: true,
-              naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0,
-            });
-          }
+          if (col.image?.src) apiProductImages.push({ src: col.image.src, alt: col.image.alt || col.title || '', hasAlt: !!(col.image.alt || '').trim(), productTitle: `Collection: ${col.title}`, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
         }
-        log(`[Images] API: ${allCollections.length} collections checked for images.`);
+        log(`[Images] API: ${allCollections.length} collections scanned.`);
       } catch {}
     }
 
-    // ── STEP 2: Browser DOM scan ───────────────────────────────
     log('[Images] Launching browser for DOM scan...');
     browser = await launchBrowser();
     const page = await browser.newPage();
@@ -607,14 +577,12 @@ app.get('/scan-images', async (req, res) => {
     await page.setCacheEnabled(false);
 
     const imageSizeMap = new Map();
-
     const attachListener = () => {
       page.on('response', async (response) => {
         const url = response.url();
         if (!/\.(jpg|jpeg|png|gif|webp|avif|svg)(\?|$)/i.test(url) || imageSizeMap.has(url)) return;
         try {
-          const headers = response.headers();
-          let size = parseInt(headers['content-length'] || 0, 10);
+          let size = parseInt(response.headers()['content-length'] || 0, 10);
           if (!size) { try { const buf = await response.buffer(); size = buf.length; } catch {} }
           if (size) imageSizeMap.set(url, size);
         } catch {}
@@ -629,24 +597,16 @@ app.get('/scan-images', async (req, res) => {
     page.removeAllListeners('response');
 
     const homepageImages = await extractDomImages(page);
-    log(`[Images] Homepage: ${homepageImages.length} images found.`);
+    log(`[Images] Homepage: ${homepageImages.length} images.`);
 
-    // ── STEP 3: Scan product pages + collection pages ──────────
     let extraImages = [];
     try {
       const links = await page.evaluate((base) => {
-        const all = Array.from(document.querySelectorAll('a[href]'))
-          .map(a => a.href)
-          .filter(href => {
-            try { return new URL(href).hostname === new URL(base).hostname && !href.includes('#'); }
-            catch { return false; }
-          });
-        const products    = [...new Set(all.filter(h => h.includes('/products/')))].slice(0, 6);
-        const collections = [...new Set(all.filter(h => h.includes('/collections/')))].slice(0, 3);
-        return [...products, ...collections];
+        const all = Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(href => {
+          try { return new URL(href).hostname === new URL(base).hostname && !href.includes('#'); } catch { return false; }
+        });
+        return [...new Set([...all.filter(h => h.includes('/products/')).slice(0, 6), ...all.filter(h => h.includes('/collections/')).slice(0, 3)])];
       }, finalUrl);
-
-      log(`[Images] Found ${links.length} product/collection pages to scan...`);
 
       for (const link of links) {
         try {
@@ -654,133 +614,68 @@ app.get('/scan-images', async (req, res) => {
           await page.goto(link, { waitUntil: 'networkidle2', timeout: 40000 });
           try { await page.reload({ waitUntil: 'networkidle2', timeout: 25000 }); } catch {}
           page.removeAllListeners('response');
-          const imgs = await extractDomImages(page);
-          extraImages.push(...imgs);
-          log(`[Images] ${link.split('/').slice(-2).join('/')}: ${imgs.length} images.`);
+          extraImages.push(...(await extractDomImages(page)));
         } catch { page.removeAllListeners('response'); }
       }
-    } catch (e) {
-      log(`[Images] Extra page scan note: ${e.message}`);
-    }
+    } catch {}
 
-    // ── STEP 4: Merge all sources ─────────────────────────────
-    log('[Images] Merging all sources...');
     const allImagesMap = new Map();
-
-    // API images as base
-    for (const img of apiProductImages) {
-      const key = img.src.split('?')[0];
-      if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img });
-    }
-
-    // DOM images — overwrite/update with real dimensions
+    for (const img of apiProductImages) { const key = img.src.split('?')[0]; if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img }); }
     for (const img of [...homepageImages, ...extraImages]) {
       if (!img.src) continue;
-      const key        = img.src.split('?')[0];
-      const sizeBytes  = imageSizeMap.get(img.src) || 0;
-      const sizeKb     = +(sizeBytes / 1024).toFixed(1);
-
+      const key = img.src.split('?')[0];
+      const sizeKb = +((imageSizeMap.get(img.src) || 0) / 1024).toFixed(1);
       if (allImagesMap.has(key)) {
         const ex = allImagesMap.get(key);
-        if (img.naturalWidth  > 0) ex.naturalWidth  = img.naturalWidth;
+        if (img.naturalWidth > 0) ex.naturalWidth = img.naturalWidth;
         if (img.naturalHeight > 0) ex.naturalHeight = img.naturalHeight;
-        if (img.displayWidth  > 0) ex.displayWidth  = img.displayWidth;
+        if (img.displayWidth > 0) ex.displayWidth = img.displayWidth;
         if (sizeKb > 0) ex.sizeKb = sizeKb;
-        ex.hasAlt  = img.hasAlt || ex.hasAlt;
-        ex.alt     = img.alt   || ex.alt;
-        ex.loading = img.loading;
-        ex.fromApi = false;
+        ex.hasAlt = img.hasAlt || ex.hasAlt; ex.alt = img.alt || ex.alt; ex.loading = img.loading; ex.fromApi = false;
       } else {
-        allImagesMap.set(key, {
-          src: img.src, alt: img.alt, hasAlt: img.hasAlt,
-          naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight,
-          displayWidth: img.displayWidth, sizeKb, loading: img.loading,
-          fromApi: false, productTitle: '',
-        });
+        allImagesMap.set(key, { src: img.src, alt: img.alt, hasAlt: img.hasAlt, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, displayWidth: img.displayWidth, sizeKb, loading: img.loading, fromApi: false, productTitle: '' });
       }
     }
 
-    // ── STEP 5: Fetch sizes for API-only images via HEAD ───────
     const needsSize = Array.from(allImagesMap.values()).filter(img => img.fromApi && img.sizeKb === 0);
     if (needsSize.length > 0) {
-      log(`[Images] Fetching sizes for ${Math.min(needsSize.length, 30)} API-only images...`);
-      await Promise.allSettled(
-        needsSize.slice(0, 30).map(async (img) => {
-          try {
-            const headRes = await axios.head(img.src, { timeout: 6000 });
-            const cl = parseInt(headRes.headers['content-length'] || 0, 10);
-            if (cl > 0) {
-              img.sizeKb = +(cl / 1024).toFixed(1);
-              const key = img.src.split('?')[0];
-              if (allImagesMap.has(key)) allImagesMap.get(key).sizeKb = img.sizeKb;
-            }
-          } catch {}
-        })
-      );
+      await Promise.allSettled(needsSize.slice(0, 30).map(async (img) => {
+        try {
+          const headRes = await axios.head(img.src, { timeout: 6000 });
+          const cl = parseInt(headRes.headers['content-length'] || 0, 10);
+          if (cl > 0) { img.sizeKb = +(cl / 1024).toFixed(1); const key = img.src.split('?')[0]; if (allImagesMap.has(key)) allImagesMap.get(key).sizeKb = img.sizeKb; }
+        } catch {}
+      }));
     }
 
-    // ── STEP 6: Analyse ALL images ─────────────────────────────
-    log('[Images] Analysing all images...');
-    let missingAlt = 0, oversized = 0, largeFiles = 0, nonModern = 0;
-    let totalSizeBytes = 0, potentialSavingsBytes = 0;
-
-    // FIX: Process ALL images, not just ones with issues
-    const allProcessed = Array.from(allImagesMap.values())
-      .filter(img => img.src && !img.src.startsWith('data:'))
-      .map(img => {
-        const sizeBytes = img.sizeKb * 1024;
-        totalSizeBytes += sizeBytes;
-
-        const issues = [];
-        if (!img.hasAlt) { issues.push('missing-alt'); missingAlt++; }
-        const isOversized = img.naturalWidth > 0 && img.displayWidth > 0
-          && img.naturalWidth > img.displayWidth * 2 && img.naturalWidth > 200;
-        if (isOversized) { issues.push('oversized'); oversized++; }
-        if (img.sizeKb > 500) { issues.push('large-file'); largeFiles++; }
-        const isModern = /\.(webp|avif)(\?|$)/i.test(img.src);
-        if (!isModern && sizeBytes > 0) { issues.push('non-modern'); nonModern++; }
-
-        let savingsBytes = 0;
-        if (isOversized)  savingsBytes += sizeBytes * 0.35;
-        if (!isModern)    savingsBytes += sizeBytes * 0.25;
-        if (img.sizeKb > 500) savingsBytes += sizeBytes * 0.40;
-        potentialSavingsBytes += savingsBytes;
-
-        return {
-          src: img.src, alt: img.alt, hasAlt: img.hasAlt,
-          naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight,
-          displayWidth: img.displayWidth, sizeKb: img.sizeKb,
-          loading: img.loading || 'eager', isOversized, isModern, issues,
-          fromApi: img.fromApi || false, productTitle: img.productTitle || '',
-        };
-      });
-
-    // Sort: images with issues first, then by size descending
-    allProcessed.sort((a, b) => {
-      if (a.issues.length > 0 && b.issues.length === 0) return -1;
-      if (a.issues.length === 0 && b.issues.length > 0) return  1;
-      return b.sizeKb - a.sizeKb;
+    let missingAlt = 0, oversized = 0, largeFiles = 0, nonModern = 0, totalSizeBytes = 0, potentialSavingsBytes = 0;
+    const allProcessed = Array.from(allImagesMap.values()).filter(img => img.src && !img.src.startsWith('data:')).map(img => {
+      const sizeBytes = img.sizeKb * 1024;
+      totalSizeBytes += sizeBytes;
+      const issues = [];
+      if (!img.hasAlt) { issues.push('missing-alt'); missingAlt++; }
+      const isOversized = img.naturalWidth > 0 && img.displayWidth > 0 && img.naturalWidth > img.displayWidth * 2 && img.naturalWidth > 200;
+      if (isOversized) { issues.push('oversized'); oversized++; }
+      if (img.sizeKb > 500) { issues.push('large-file'); largeFiles++; }
+      const isModern = /\.(webp|avif)(\?|$)/i.test(img.src);
+      if (!isModern && sizeBytes > 0) { issues.push('non-modern'); nonModern++; }
+      let savingsBytes = 0;
+      if (isOversized) savingsBytes += sizeBytes * 0.35;
+      if (!isModern)   savingsBytes += sizeBytes * 0.25;
+      if (img.sizeKb > 500) savingsBytes += sizeBytes * 0.40;
+      potentialSavingsBytes += savingsBytes;
+      return { src: img.src, alt: img.alt, hasAlt: img.hasAlt, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, displayWidth: img.displayWidth, sizeKb: img.sizeKb, loading: img.loading || 'eager', isOversized, isModern, issues, fromApi: img.fromApi || false, productTitle: img.productTitle || '' };
     });
+
+    allProcessed.sort((a, b) => { if (a.issues.length > 0 && b.issues.length === 0) return -1; if (a.issues.length === 0 && b.issues.length > 0) return 1; return b.sizeKb - a.sizeKb; });
 
     const totalImages = allImagesMap.size;
     const issuePoints = missingAlt * 3 + oversized * 5 + largeFiles * 8 + nonModern * 2;
-    const score       = Math.max(0, Math.min(100, 100 - Math.round(issuePoints / Math.max(totalImages, 1) * 10)));
+    const score = Math.max(0, Math.min(100, 100 - Math.round(issuePoints / Math.max(totalImages, 1) * 10)));
 
-    const result = {
-      score,
-      scoreGrade: score >= 80 ? 'A' : score >= 60 ? 'B' : score >= 40 ? 'C' : 'D',
-      totalImages,
-      imagesWithIssues: allProcessed.filter(i => i.issues.length > 0).length,
-      missingAlt, oversized, largeFiles, nonModern,
-      totalSizeMb:         +(totalSizeBytes / 1024 / 1024).toFixed(2),
-      potentialSavingsKb:  Math.round(potentialSavingsBytes / 1024),
-      afterOptimizationMb: +((totalSizeBytes - potentialSavingsBytes) / 1024 / 1024).toFixed(2),
-      apiProductCount:     apiProductImages.length,
-      // FIX: Send ALL images (was filtering to only issues+large, now ALL)
-      images: allProcessed.slice(0, 200),
-    };
+    const result = { score, scoreGrade: score >= 80 ? 'A' : score >= 60 ? 'B' : score >= 40 ? 'C' : 'D', totalImages, imagesWithIssues: allProcessed.filter(i => i.issues.length > 0).length, missingAlt, oversized, largeFiles, nonModern, totalSizeMb: +(totalSizeBytes / 1024 / 1024).toFixed(2), potentialSavingsKb: Math.round(potentialSavingsBytes / 1024), afterOptimizationMb: +((totalSizeBytes - potentialSavingsBytes) / 1024 / 1024).toFixed(2), apiProductCount: apiProductImages.length, images: allProcessed.slice(0, 200) };
 
-    log(`[Images] Done. ${totalImages} total images. Score: ${score}/100.`);
+    log(`[Images] Done. ${totalImages} images. Score: ${score}/100.`);
     sendSse(res, 'imageResult', result);
 
   } catch (error) {
@@ -795,17 +690,12 @@ app.get('/scan-images', async (req, res) => {
   }
 });
 
-// ── Helper: extract img tags from current page ──────────
 async function extractDomImages(page) {
   return page.evaluate(() =>
     Array.from(document.querySelectorAll('img')).map(img => ({
-      src:          img.currentSrc || img.src || '',
-      alt:          img.alt || '',
-      hasAlt:       (img.alt || '').trim() !== '',
-      naturalWidth: img.naturalWidth  || 0,
-      naturalHeight:img.naturalHeight || 0,
-      displayWidth: Math.round(img.getBoundingClientRect().width) || 0,
-      loading:      img.loading || 'eager',
+      src: img.currentSrc || img.src || '', alt: img.alt || '', hasAlt: (img.alt || '').trim() !== '',
+      naturalWidth: img.naturalWidth || 0, naturalHeight: img.naturalHeight || 0,
+      displayWidth: Math.round(img.getBoundingClientRect().width) || 0, loading: img.loading || 'eager',
     }))
   ).then(imgs => imgs.filter(img => img.src && !img.src.startsWith('data:') && img.src.startsWith('http')));
 }
@@ -822,26 +712,16 @@ app.get('/scan-ghost-code', async (req, res) => {
   const activeStoreUrl = req.query.storeUrl   || ENV_STORE_URL;
 
   try {
-    if (!activeToken)    throw new Error('Admin API Token missing. Enter shpat_... in the token field.');
+    if (!activeToken)    throw new Error('Admin API Token missing. Set SHOPIFY_ADMIN_TOKEN in .env');
     if (!activeStoreUrl) throw new Error('Store URL missing.');
 
     const host   = extractHostname(activeStoreUrl);
-    const shopify = axios.create({
-      baseURL: `https://${host}/admin/api/2025-10`,
-      headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' },
-      timeout: 30000,
-    });
+    const shopify = axios.create({ baseURL: `https://${host}/admin/api/2025-10`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
 
     log('[Ghost] Fetching installed apps...');
     let installedAppNames = [], installedAppHandles = [];
     try {
-      const gqlRes = await axios({
-        url:     `https://${host}/admin/api/2024-01/graphql.json`,
-        method:  'POST',
-        headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' },
-        data:    JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }),
-        timeout: 30000,
-      });
+      const gqlRes = await axios({ url: `https://${host}/admin/api/2024-01/graphql.json`, method: 'POST', headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, data: JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }), timeout: 30000 });
       const edges = gqlRes.data?.data?.appInstallations?.edges || [];
       installedAppNames   = edges.map(e => e.node.app.title.toLowerCase());
       installedAppHandles = edges.map(e => (e.node.app.handle || '').toLowerCase());
@@ -875,31 +755,16 @@ app.get('/scan-ghost-code', async (req, res) => {
         const key = appInfo.name;
         if (!detectedApps.has(key)) {
           const appWords    = appInfo.name.toLowerCase().split(/[\s\-_]+/).filter(w => w.length > 3);
-          const isInstalled = installedAppNames.some(n => appWords.some(w => n.includes(w)))
-                           || installedAppHandles.some(h => appWords.some(w => h.includes(w)));
+          const isInstalled = installedAppNames.some(n => appWords.some(w => n.includes(w))) || installedAppHandles.some(h => appWords.some(w => h.includes(w)));
           const assetMeta   = allAssets.find(a => a.key === file.key);
-          detectedApps.set(key, {
-            name: appInfo.name, icon: appInfo.icon, category: appInfo.category || 'Uncategorized',
-            files: new Set(), fingerprint, isInstalled,
-            confidence: isInstalled ? 15 : 85,
-            wastedKb: Math.round((assetMeta?.size || 0) / 1024),
-          });
+          detectedApps.set(key, { name: appInfo.name, icon: appInfo.icon, category: appInfo.category || 'Uncategorized', files: new Set(), fingerprint, isInstalled, confidence: isInstalled ? 15 : 85, wastedKb: Math.round((assetMeta?.size || 0) / 1024) });
         }
         detectedApps.get(key).files.add(file.key);
       }
     }
 
-    const foundApps = Array.from(detectedApps.values()).map(app => ({
-      name: app.name, icon: app.icon, category: app.category, fingerprint: app.fingerprint,
-      isInstalled: app.isInstalled, confidence: app.confidence, wastedKb: app.wastedKb,
-      files: Array.from(app.files), fileCount: app.files.size,
-    }));
-
-    foundApps.sort((a, b) => {
-      if (!a.isInstalled && b.isInstalled)  return -1;
-      if (a.isInstalled  && !b.isInstalled) return  1;
-      return b.confidence - a.confidence;
-    });
+    const foundApps = Array.from(detectedApps.values()).map(app => ({ name: app.name, icon: app.icon, category: app.category, fingerprint: app.fingerprint, isInstalled: app.isInstalled, confidence: app.confidence, wastedKb: app.wastedKb, files: Array.from(app.files), fileCount: app.files.size }));
+    foundApps.sort((a, b) => { if (!a.isInstalled && b.isInstalled) return -1; if (a.isInstalled && !b.isInstalled) return 1; return b.confidence - a.confidence; });
 
     const ghostCount    = foundApps.filter(a => !a.isInstalled).length;
     const totalWastedKb = foundApps.filter(a => !a.isInstalled).reduce((s, a) => s + (a.wastedKb || 0), 0);
@@ -926,10 +791,7 @@ app.get('/scan-fonts', async (req, res) => {
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
   const { storeUrl, storePassword } = req.query;
 
-  if (!storeUrl) {
-    sendSse(res, 'scanError', { details: 'storeUrl is required' });
-    clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end();
-  }
+  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl is required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
   const finalUrl = normalizeUrl(storeUrl);
   let browser, errorOccurred = false;
@@ -947,12 +809,7 @@ app.get('/scan-fonts', async (req, res) => {
       try {
         let sizeBytes = parseInt(response.headers()['content-length'] || 0, 10);
         if (!sizeBytes) { try { const buf = await response.buffer(); sizeBytes = buf.length; } catch {} }
-        fontRequests.push({
-          url, sizeKb: +(sizeBytes / 1024).toFixed(1),
-          format: url.match(/\.(woff2?|ttf|otf|eot)/i)?.[1]?.toLowerCase() || 'unknown',
-          isGoogleFont: url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com'),
-          status: response.status(),
-        });
+        fontRequests.push({ url, sizeKb: +(sizeBytes / 1024).toFixed(1), format: url.match(/\.(woff2?|ttf|otf|eot)/i)?.[1]?.toLowerCase() || 'unknown', isGoogleFont: url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com'), status: response.status() });
       } catch {}
     });
 
@@ -962,22 +819,9 @@ app.get('/scan-fonts', async (req, res) => {
 
     const fontData = await page.evaluate(() => {
       const fonts = [], seen = new Set();
-      document.fonts.forEach(font => {
-        const key = `${font.family}|${font.weight}|${font.style}`;
-        if (!seen.has(key)) { seen.add(key); fonts.push({ family: font.family, weight: font.weight, style: font.style, status: font.status }); }
-      });
+      document.fonts.forEach(font => { const key = `${font.family}|${font.weight}|${font.style}`; if (!seen.has(key)) { seen.add(key); fonts.push({ family: font.family, weight: font.weight, style: font.style, status: font.status }); } });
       const fontDisplayIssues = [];
-      try {
-        Array.from(document.styleSheets).forEach(sheet => {
-          try { Array.from(sheet.cssRules || []).forEach(rule => {
-            if (rule.constructor.name === 'CSSFontFaceRule') {
-              const display = rule.style.getPropertyValue('font-display');
-              if (!display || display === 'auto' || display === 'block')
-                fontDisplayIssues.push({ src: rule.style.getPropertyValue('src').slice(0,100), display: display || 'not set' });
-            }
-          }); } catch {}
-        });
-      } catch {}
+      try { Array.from(document.styleSheets).forEach(sheet => { try { Array.from(sheet.cssRules || []).forEach(rule => { if (rule.constructor.name === 'CSSFontFaceRule') { const display = rule.style.getPropertyValue('font-display'); if (!display || display === 'auto' || display === 'block') fontDisplayIssues.push({ src: rule.style.getPropertyValue('src').slice(0,100), display: display || 'not set' }); } }); } catch {} }); } catch {}
       return { fonts, fontDisplayIssues, preloadedFonts: Array.from(document.querySelectorAll('link[rel="preload"][as="font"]')).map(l => l.href) };
     });
 
@@ -985,7 +829,6 @@ app.get('/scan-fonts', async (req, res) => {
 
     const seen = new Set();
     const uniqueFonts = fontRequests.filter(f => { if (seen.has(f.url)) return false; seen.add(f.url); return true; });
-
     const googleFonts = uniqueFonts.filter(f => f.isGoogleFont);
     const nonWoff2    = uniqueFonts.filter(f => f.format !== 'woff2' && !f.url.includes('fonts.gstatic.com'));
     const heavyFonts  = uniqueFonts.filter(f => f.sizeKb > 60);
@@ -1000,14 +843,7 @@ app.get('/scan-fonts', async (req, res) => {
     if (fontData.fonts.length > 6) { issues.push({type:'too-many-fonts',severity:'info',message:`${fontData.fonts.length} font variants loaded`}); score -= 5; }
     score = Math.max(0, Math.min(100, score));
 
-    const result = {
-      score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D',
-      totalFonts: fontData.fonts.length, totalFontFiles: uniqueFonts.length,
-      googleFonts: googleFonts.length, selfHosted: uniqueFonts.filter(f => !f.isGoogleFont).length,
-      totalSizeKb: +uniqueFonts.reduce((s, f) => s + f.sizeKb, 0).toFixed(1),
-      preloaded: fontData.preloadedFonts.length, issues: issues.length,
-      fonts: fontData.fonts, fontFiles: uniqueFonts, issueList: issues, recommendations,
-    };
+    const result = { score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D', totalFonts: fontData.fonts.length, totalFontFiles: uniqueFonts.length, googleFonts: googleFonts.length, selfHosted: uniqueFonts.filter(f => !f.isGoogleFont).length, totalSizeKb: +uniqueFonts.reduce((s, f) => s + f.sizeKb, 0).toFixed(1), preloaded: fontData.preloadedFonts.length, issues: issues.length, fonts: fontData.fonts, fontFiles: uniqueFonts, issueList: issues, recommendations };
 
     log(`[Fonts] Done. Score: ${score}/100.`);
     sendSse(res, 'fontResult', result);
@@ -1033,10 +869,7 @@ app.get('/scan-css', async (req, res) => {
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
   const { storeUrl, storePassword } = req.query;
 
-  if (!storeUrl) {
-    sendSse(res, 'scanError', { details: 'storeUrl is required' });
-    clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end();
-  }
+  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl is required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
   const finalUrl = normalizeUrl(storeUrl);
   let browser, errorOccurred = false;
@@ -1063,8 +896,8 @@ app.get('/scan-css', async (req, res) => {
       let used = 0;
       for (const r of entry.ranges) used += r.end - r.start;
       totalBytes += tot; usedBytes += used;
-      const rules    = (entry.text || '').split('{').length - 1;
-      totalRules    += rules;
+      const rules = (entry.text || '').split('{').length - 1;
+      totalRules += rules;
       const unusedPct = tot > 0 ? Math.round((1 - used / tot) * 100) : 0;
       const sizeKb    = +(tot / 1024).toFixed(1);
       const savingsKb = +((tot - used) / 1024).toFixed(1);
@@ -1096,14 +929,7 @@ app.get('/scan-css', async (req, res) => {
     if (totalSizeKb > 200) recommendations.push('Minify CSS files to reduce transfer size');
     if (fileBreakdown.some(f => f.unusedPct > 70)) recommendations.push('Some CSS files are >70% unused — consider splitting or removing them');
 
-    const result = {
-      score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D',
-      totalSizeKb, totalRules, unusedPct, potentialSaveKb: potentialSave,
-      afterOptKb: +(usedBytes / 1024).toFixed(1),
-      blockingSheets: domAnalysis.blocking, inlineStyles: domAnalysis.inlineStyles,
-      inlineStyleSizeKb: domAnalysis.inlineStyleSizeKb,
-      fileCount: fileBreakdown.length, files: fileBreakdown.slice(0, 20), recommendations,
-    };
+    const result = { score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D', totalSizeKb, totalRules, unusedPct, potentialSaveKb: potentialSave, afterOptKb: +(usedBytes / 1024).toFixed(1), blockingSheets: domAnalysis.blocking, inlineStyles: domAnalysis.inlineStyles, inlineStyleSizeKb: domAnalysis.inlineStyleSizeKb, fileCount: fileBreakdown.length, files: fileBreakdown.slice(0, 20), recommendations };
 
     log(`[CSS] Done. Score: ${score}/100, ${unusedPct}% unused.`);
     sendSse(res, 'cssResult', result);
@@ -1124,3 +950,26 @@ app.get('/scan-css', async (req, res) => {
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend', 'server.html')));
 
 app.listen(port, () => console.log(`[Server] App Auditor running at http://localhost:${port}`));
+
+// ════════════════════════════════════════════════════════
+// /check-password — Quick check if a store is password protected
+// ════════════════════════════════════════════════════════
+app.get('/check-password', async (req, res) => {
+  const { storeUrl } = req.query;
+  if (!storeUrl) return res.json({ protected: false });
+  try {
+    const response = await axios.get(normalizeUrl(storeUrl), {
+      maxRedirects: 5,
+      timeout: 10000,
+      validateStatus: () => true, // don't throw on any status
+    });
+    // Shopify password-protected stores redirect to /password or return a page with password form
+    const isProtected =
+      response.request?.path?.includes('/password') ||
+      (response.data && typeof response.data === 'string' &&
+       response.data.includes('password_form') || response.data.includes('Enter store password'));
+    res.json({ protected: !!isProtected });
+  } catch {
+    res.json({ protected: false });
+  }
+});
