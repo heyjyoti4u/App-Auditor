@@ -44,11 +44,20 @@ async function bootAutoScan() {
   const overlayScanMsg = document.getElementById('overlay-scan-msg');
 
   // ── Step 1: Call /init to get store context ────────────
+// ── Step 1: Call /init to get store context ────────────
   try {
-    // Extract ?shop=xxx.myshopify.com from current URL (Shopify passes this)
-    const urlParams = new URLSearchParams(window.location.search);
-    const shopParam = urlParams.get('shop') || '';
-    const tokenParam= urlParams.get('token') || '';
+    // Extract shop from the server-injected context first
+    const injectedContext = window.__SHOPIFY_CONTEXT__ || {};
+    let shopParam = injectedContext.shop || '';
+    
+    // Fallback: If not injected, try reading from URL (for direct testing)
+    if (!shopParam) {
+        const urlParams = new URLSearchParams(window.location.search);
+        shopParam = urlParams.get('shop') || '';
+    }
+    const tokenParam = ''; // Token hamesha ENV se lenge
+
+    
 
     const initParams = new URLSearchParams();
     if (shopParam)  initParams.append('shop', shopParam);
