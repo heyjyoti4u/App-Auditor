@@ -947,7 +947,31 @@ app.get('/scan-css', async (req, res) => {
 });
 
 // ── SERVE ─────────────────────────────────────────────────
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend', 'server.html')));
+app.get('/', async (req, res) => {
+  try {
+    const htmlPath = path.join(__dirname, '../frontend', 'server.html');
+    let htmlContent = await fs.readFile(htmlPath, 'utf8');
+
+    // Shopify se aane wale URL parameters ko catch karo
+    const shop = req.query.shop || '';
+    
+    // In parameters ko ek script tag banakar HTML ke head mein daal do
+    const injectionScript = `
+      <script>
+        window.__SHOPIFY_CONTEXT__ = {
+          shop: "${shop}"
+        };
+      </script>
+    `;
+
+    // HTML ko modify karke bhejo
+    htmlContent = htmlContent.replace('</head>', `${injectionScript}\n</head>`);
+    res.send(htmlContent);
+  } catch (error) {
+    console.error('[Server] Failed to serve HTML:', error);
+    res.status(500).send('Error loading the app UI.');
+  }
+});
 
 app.listen(port, () => console.log(`[Server] App Auditor running at http://localhost:${port}`));
 
