@@ -23,100 +23,112 @@ let currentSort = 'impact', currentCatFilter = 'all', hasFinalized = false;
 let elLog, elLoadingMsg, elSpinnerContainer, elLoading, elError, elErrorMsg, elAppShell;
 let allImageData = [];
 
-// Boot context — filled by /init, never typed by user
+// Boot context — filled by /init, NEVER typed by user
 const ctx = { storeUrl: '', hasToken: false, storePassword: '' };
 
 /* ══════════════════════════════════════════════════════
-   BOOT — runs on DOMContentLoaded
-   1. Call /init → get storeUrl + hasToken from server .env / DB
-   2. Check if store is password protected
-   3. If yes → show password input, wait for submit
-   4. Start scan automatically
+   BOOT
+   FIX 1: Read shop from __SHOPIFY_CONTEXT__ (injected by server)
+           NOT from window.location.search (unreliable in iframe)
+   FIX 2: Skip storefront password check if hasToken=true
+           Admin API scan does NOT visit storefront
 ══════════════════════════════════════════════════════ */
 async function boot() {
-  const overlay      = document.getElementById('boot-overlay');
-  const statusEl     = document.getElementById('boot-status');
-  const statusTxtEl  = document.getElementById('boot-status-text');
-  const storeNameEl  = document.getElementById('boot-store-name');
-  const pwdSection   = document.getElementById('pwd-section');
-  const errSection   = document.getElementById('error-section');
-  const errText      = document.getElementById('error-text');
+  const overlay     = document.getElementById('boot-overlay');
+  const statusEl    = document.getElementById('boot-status');
+  const statusTxtEl = document.getElementById('boot-status-text');
+  const storeNameEl = document.getElementById('boot-store-name');
+  const pwdSection  = document.getElementById('pwd-section');
+  const errSection  = document.getElementById('error-section');
+  const errText     = document.getElementById('error-text');
 
   const setStatus = (msg, cls = '') => {
-    statusEl.className = 'boot-status' + (cls ? ' ' + cls : '');
+    statusEl.className   = 'boot-status' + (cls ? ' ' + cls : '');
     statusTxtEl.textContent = msg;
   };
 
   const showErr = (msg) => {
     errSection.style.display = 'block';
-    errText.textContent = msg;
-    statusEl.style.display = 'none';
-    storeNameEl.style.color = 'var(--danger)';
-    storeNameEl.textContent = 'Setup Required';
+    errText.textContent      = msg;
+    statusEl.style.display   = 'none';
+    storeNameEl.style.color  = 'var(--danger)';
+    storeNameEl.textContent  = 'Setup Required';
   };
 
   try {
-    // ── Step 1: Get context from server ───────────────
-    // Shopify passes ?shop= when app is embedded in admin
-    const urlParams = new URLSearchParams(window.location.search);
-    const shopParam = urlParams.get('shop') || '';
+    // ── FIX 1: Read shop from server-injected context FIRST ──────
+    // __SHOPIFY_CONTEXT__ is injected into <head> by server.js '/' route
+    // This is the ONLY reliable way to get shop inside a Shopify iframe
+    const shopFromCtx = window.__SHOPIFY_CONTEXT__?.shop || '';
 
-    const initUrl = shopParam ? `/init?shop=${encodeURIComponent(shopParam)}` : '/init';
+    // Fallback to URL params (works when accessed directly, not via iframe)
+    const urlParams   = new URLSearchParams(window.location.search);
+    const shopParam   = shopFromCtx || urlParams.get('shop') || '';
+
+    console.log('[Boot] shopFromCtx:', shopFromCtx, '| shopFromURL:', urlParams.get('shop'));
+
+    const initUrl = shopParam
+      ? `/init?shop=${encodeURIComponent(shopParam)}`
+      : '/init';
+
+    setStatus('Connecting to Shopify...', '');
+
     const initRes  = await fetch(initUrl);
     const initData = await initRes.json();
 
     ctx.storeUrl  = initData.storeUrl  || '';
     ctx.hasToken  = initData.hasToken  || false;
 
+    console.log('[Boot] storeUrl:', ctx.storeUrl, '| hasToken:', ctx.hasToken, '| source:', initData.tokenSource);
+
     if (!ctx.storeUrl) {
-      showErr('Store URL not configured. Set SHOPIFY_STORE_URL in your .env file.');
+      showErr('Store URL not detected. Make sure the app is installed via OAuth or set SHOPIFY_STORE_URL in .env');
       return;
     }
 
-    // Update UI with detected store
     const displayUrl = ctx.storeUrl.replace('https://', '');
     storeNameEl.textContent = displayUrl;
     document.getElementById('topbar-store-text').textContent = displayUrl;
     document.getElementById('storeUrl').value = ctx.storeUrl;
 
+    // ── FIX 2: Only check storefront password if NO OAuth token ──
+    // hasToken=true → Admin API scan → does NOT visit storefront → no password needed
+    // hasToken=false → Puppeteer scan → visits storefront → may need password
     if (!ctx.hasToken) {
-      setStatus('No Admin Token — using Puppeteer scan', 'warn');
+      setStatus('Checking store access...', '');
+      let isProtected = false;
+      try {
+        const pwdRes  = await fetch(`/check-password?storeUrl=${encodeURIComponent(ctx.storeUrl)}`);
+        const pwdData = await pwdRes.json();
+        isProtected   = pwdData.protected || false;
+      } catch {}
+
+      if (isProtected) {
+        setStatus('Password protected store detected', 'warn');
+        pwdSection.style.display = 'block';
+
+        await new Promise(resolve => {
+          const input  = document.getElementById('pwd-input');
+          const submit = document.getElementById('pwd-submit');
+          const go = () => {
+            const pwd = input.value.trim();
+            if (!pwd) { input.style.borderColor = 'var(--danger)'; return; }
+            ctx.storePassword = pwd;
+            document.getElementById('storePassword').value = pwd;
+            pwdSection.style.display = 'none';
+            resolve();
+          };
+          submit.addEventListener('click', go);
+          input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+        });
+      }
+
+      setStatus('Using Puppeteer scan (no Admin Token)', 'warn');
     } else {
       setStatus('Admin API connected ✓', 'green');
     }
 
-    // ── Step 2: Check if store is password protected ──
-    setStatus('Checking store access...', '');
-    let isProtected = false;
-    try {
-      const pwdRes  = await fetch(`/check-password?storeUrl=${encodeURIComponent(ctx.storeUrl)}`);
-      const pwdData = await pwdRes.json();
-      isProtected   = pwdData.protected || false;
-    } catch { /* assume not protected */ }
-
-    // ── Step 3: If protected, show password input ─────
-    if (isProtected) {
-      setStatus('Password protected store detected', 'warn');
-      pwdSection.style.display = 'block';
-
-      await new Promise(resolve => {
-        const input  = document.getElementById('pwd-input');
-        const submit = document.getElementById('pwd-submit');
-        const go = () => {
-          const pwd = input.value.trim();
-          if (!pwd) { input.style.borderColor = 'var(--danger)'; return; }
-          ctx.storePassword = pwd;
-          // Also set the hidden storePassword field for legacy code
-          document.getElementById('storePassword').value = pwd;
-          pwdSection.style.display = 'none';
-          resolve();
-        };
-        submit.addEventListener('click', go);
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-      });
-    }
-
-    // ── Step 4: Start scan ────────────────────────────
+    // ── Start scan ────────────────────────────────────────────────
     setStatus('Starting scan...', '');
     await startScan();
 
@@ -127,7 +139,76 @@ async function boot() {
 }
 
 /* ══════════════════════════════════════════════════════
-   START SCAN (called after boot resolves)
+   ENSURE STORE PASSWORD
+   Called by individual Puppeteer scans (speed/images/fonts/css)
+   when the store might be password protected.
+   Shows a small inline prompt if password not already set.
+══════════════════════════════════════════════════════ */
+async function ensureStorePassword() {
+  if (ctx.storePassword) return true; // Already have it
+
+  // Quick check if protected
+  try {
+    const pwdRes  = await fetch(`/check-password?storeUrl=${encodeURIComponent(ctx.storeUrl)}`);
+    const pwdData = await pwdRes.json();
+    if (!pwdData.protected) return true; // Not protected, no password needed
+  } catch { return true; } // Assume not protected on error
+
+  // Store IS protected — show a modal-like prompt
+  return new Promise(resolve => {
+    // Create temporary password modal
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9998;
+      display:flex;align-items:center;justify-content:center;
+    `;
+    modal.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px 28px;max-width:360px;width:100%;margin:0 16px">
+        <div style="font-size:13px;color:var(--warn);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-lock"></i> Password Protected Store
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5">
+          This scan visits your storefront. Enter the store password to continue.
+        </p>
+        <div style="display:flex;gap:8px">
+          <input id="modal-pwd-input" class="url-input" type="password" placeholder="Store password" style="flex:1;width:auto">
+          <button id="modal-pwd-submit" class="scan-btn" style="padding:7px 14px;flex-shrink:0">Continue</button>
+        </div>
+        <button id="modal-pwd-skip" style="margin-top:10px;font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;width:100%;text-align:center">
+          Skip (scan may fail)
+        </button>
+      </div>`;
+    document.body.appendChild(modal);
+
+    const input  = modal.querySelector('#modal-pwd-input');
+    const submit = modal.querySelector('#modal-pwd-submit');
+    const skip   = modal.querySelector('#modal-pwd-skip');
+
+    input.focus();
+
+    const done = (pwd) => {
+      if (pwd) {
+        ctx.storePassword = pwd;
+        document.getElementById('storePassword').value = pwd;
+      }
+      document.body.removeChild(modal);
+      resolve(true);
+    };
+
+    submit.addEventListener('click', () => {
+      const pwd = input.value.trim();
+      if (!pwd) { input.style.borderColor = 'var(--danger)'; return; }
+      done(pwd);
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { const pwd = input.value.trim(); if (pwd) done(pwd); }
+    });
+    skip.addEventListener('click', () => done(''));
+  });
+}
+
+/* ══════════════════════════════════════════════════════
+   START SCAN
 ══════════════════════════════════════════════════════ */
 async function startScan() {
   hasFinalized = false;
@@ -137,7 +218,6 @@ async function startScan() {
     appReport: null, perfReport: null, hasError: false,
   };
 
-  // Show loading terminal
   elLog.innerHTML = '';
   elLoadingMsg.textContent = 'Starting...';
   elLoading.style.display  = 'flex';
@@ -164,12 +244,15 @@ function runApiScan() {
 
     if (scanState.runAppScan) {
       const params = new URLSearchParams({ storeUrl: ctx.storeUrl });
-      if (ctx.storePassword) params.append('storePassword', ctx.storePassword);
+      // No storePassword here — Admin API scan does not visit storefront
       const es = new EventSource(`/scan-apps-api?${params}`);
       es.addEventListener('log',        e => { const d = JSON.parse(e.data); logMsg(d.message, d.type||'info'); });
       es.addEventListener('scanResult', e => { scanState.appReport = JSON.parse(e.data); logMsg('[System] ✅ App data from Admin API.', 'success'); });
       es.addEventListener('scanComplete', () => { es.close(); appDone = true; done(); });
-      es.addEventListener('scanError',    e => { logMsg('[ERROR] ' + JSON.parse(e.data).details, 'error'); scanState.hasError = true; es.close(); appDone = true; done(); });
+      es.addEventListener('scanError',    e => {
+        logMsg('[ERROR] App API: ' + JSON.parse(e.data).details, 'error');
+        scanState.hasError = true; es.close(); appDone = true; done();
+      });
       es.onerror = () => { if (es.readyState !== EventSource.CLOSED) { es.close(); appDone = true; done(); } };
     }
 
@@ -182,7 +265,10 @@ function runApiScan() {
       es2.addEventListener('speedResult', e => { scanState.perfReport = JSON.parse(e.data); logMsg('[System] ✅ Performance report received.', 'success'); });
       es2.addEventListener('appPerfData', e => {
         const { apps: perfApps } = JSON.parse(e.data);
-        if (scanState.appReport?.appBreakdown && perfApps?.length) mergePerfIntoApps(scanState.appReport.appBreakdown, perfApps);
+        if (scanState.appReport?.appBreakdown && perfApps?.length) {
+          mergePerfIntoApps(scanState.appReport.appBreakdown, perfApps);
+          logMsg(`[System] ✅ Perf data merged into ${perfApps.length} app(s).`, 'success');
+        }
       });
       es2.addEventListener('scanComplete', () => { es2.close(); perfDone = true; done(); });
       es2.addEventListener('scanError',    e => { logMsg('[ERROR] Perf: ' + JSON.parse(e.data).details, 'error'); es2.close(); perfDone = true; done(); });
@@ -194,11 +280,11 @@ function runApiScan() {
 }
 
 /* ══════════════════════════════════════════════════════
-   PUPPETEER SCAN — fallback when no token
+   PUPPETEER SCAN — fallback when no OAuth token
 ══════════════════════════════════════════════════════ */
 function runPuppeteerScan() {
   return new Promise(resolve => {
-    logMsg('[System] Using Puppeteer scan. Add SHOPIFY_ADMIN_TOKEN to .env for accurate app data.', 'info');
+    logMsg('[System] No OAuth token — using Puppeteer scan.', 'info');
     const params = new URLSearchParams({
       storeUrl:    ctx.storeUrl,
       runAppScan:  String(scanState.runAppScan),
@@ -214,7 +300,10 @@ function runPuppeteerScan() {
     es.addEventListener('perfResult', e => { scanState.perfReport = JSON.parse(e.data); });
     es.addEventListener('scanComplete', () => { es.close(); resolve(); });
     es.addEventListener('scanError',    e => { logMsg('[ERROR] ' + JSON.parse(e.data).details, 'error'); scanState.hasError = true; es.close(); resolve(); });
-    es.onerror = () => { if (es.readyState === EventSource.CLOSED) return; logMsg('Connection error.', 'error'); scanState.hasError = true; es.close(); resolve(); };
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) return;
+      logMsg('Connection error.', 'error'); scanState.hasError = true; es.close(); resolve();
+    };
   }).then(finalizeScan);
 }
 
@@ -241,20 +330,18 @@ function mergePerfIntoApps(appBreakdown, perfApps) {
 }
 
 /* ══════════════════════════════════════════════════════
-   FINALIZE — dismiss overlay, show results
+   FINALIZE
 ══════════════════════════════════════════════════════ */
 function finalizeScan() {
   if (hasFinalized) return;
   hasFinalized = true;
 
-  // Dismiss boot overlay with fade
   const overlay = document.getElementById('boot-overlay');
   overlay.style.transition = 'opacity .3s';
   overlay.style.opacity    = '0';
   setTimeout(() => { overlay.style.display = 'none'; }, 320);
 
-  // Show topbar + options bar
-  document.getElementById('main-topbar').style.display   = 'flex';
+  document.getElementById('main-topbar').style.display      = 'flex';
   document.getElementById('main-options-bar').style.display = 'flex';
 
   if (scanState.hasError && !scanState.appReport && !scanState.perfReport) {
@@ -263,7 +350,6 @@ function finalizeScan() {
 
   if (scanState.runPerfScan && scanState.perfReport?.metrics) saveToHistory(scanState.perfReport);
 
-  // Switch to overview tab
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelector('.tab[data-tab="overview"]').classList.add('active');
@@ -329,8 +415,7 @@ function initSort() {
   });
 }
 
-// Legacy: kept so old references don't break
-function initStoreTypeToggle() {}
+function initStoreTypeToggle() {} // Legacy stub
 
 /* ══════════════════════════════════════════════════════
    OVERVIEW TAB
@@ -385,10 +470,12 @@ function updateScoreRing(score) {
 }
 
 function renderVitals(metrics) {
-  const el = document.getElementById('vitals-list');
+  const el   = document.getElementById('vitals-list');
   const defs = [
-    { key:'lcp', label:'LCP', good:2.5, avg:4.0 }, { key:'tbt', label:'TBT', good:200, avg:600 },
-    { key:'cls', label:'CLS', good:0.1, avg:0.25 }, { key:'fcp', label:'FCP', good:1.8, avg:3.0 },
+    { key:'lcp', label:'LCP', good:2.5, avg:4.0 },
+    { key:'tbt', label:'TBT', good:200, avg:600 },
+    { key:'cls', label:'CLS', good:0.1, avg:0.25 },
+    { key:'fcp', label:'FCP', good:1.8, avg:3.0 },
     { key:'speedIndex', label:'Speed', good:3.4, avg:5.8 },
   ];
   el.innerHTML = defs.map(d => {
@@ -455,8 +542,13 @@ function reRenderCatBlocks(appReport) {
     const totalKb   = apps.reduce((s, a) => s + (a.totalSizeKb||0), 0).toFixed(0);
     const highCount = apps.filter(a => a.impact === 'High').length;
     const medCount  = apps.filter(a => a.impact === 'Medium').length;
-    const [label, color, pct] = highCount > 0 ? ['HIGH impact','var(--danger)',Math.min(100,60+highCount*20)] : medCount > 0 ? ['MED impact','var(--warn)',Math.min(60,30+medCount*15)] : ['LOW impact','var(--green)',12];
+    const [label, color, pct] = highCount > 0
+      ? ['HIGH impact','var(--danger)',Math.min(100,60+highCount*20)]
+      : medCount > 0
+      ? ['MED impact','var(--warn)',Math.min(60,30+medCount*15)]
+      : ['LOW impact','var(--green)',12];
     const sizeLabel = +totalKb > 0 ? `${totalKb} KB` : `${apps.length} app${apps.length>1?'s':''}`;
+
     const block = document.createElement('div');
     block.className = 'cat-block'; block.dataset.cat = cat;
     block.innerHTML = `
@@ -474,6 +566,7 @@ function reRenderCatBlocks(appReport) {
         <span class="cat-chevron open">▶</span>
       </div>
       <div class="app-list" data-list>${sorted.map(app => buildAppRow(app, isApiScan)).join('')}</div>`;
+
     block.querySelector('.cat-header').addEventListener('click', () => {
       const list = block.querySelector('[data-list]'), chev = block.querySelector('.cat-chevron'), open = chev.classList.contains('open');
       list.style.display = open ? 'none' : ''; chev.classList.toggle('open', !open);
@@ -489,8 +582,11 @@ function reRenderCatBlocks(appReport) {
 
 function buildAppRow(app, isApiScan = false) {
   const initials = app.name.split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase();
-  const pill = app.impact==='High' ? '<span class="impact-pill high">HIGH</span>' : app.impact==='Medium' ? '<span class="impact-pill medium">MED</span>' : '<span class="impact-pill low">LOW</span>';
+  const pill = app.impact==='High' ? '<span class="impact-pill high">HIGH</span>'
+             : app.impact==='Medium' ? '<span class="impact-pill medium">MED</span>'
+             : '<span class="impact-pill low">LOW</span>';
   const hasPerfData = (app.totalSizeKb||0) > 0 || (app.totalDurationMs||0) > 0;
+
   let metricsHtml = '';
   if (hasPerfData) {
     const sc = app.totalSizeKb>400?'red':app.totalSizeKb>150?'warn':'good';
@@ -501,15 +597,18 @@ function buildAppRow(app, isApiScan = false) {
   } else {
     metricsHtml = `<span class="app-mono">0 KB</span><span class="app-mono">0 ms</span>`;
   }
+
   const tbtMs = (scanState.perfReport?.culprits?.identified||[]).find(c=>c.appName===app.name)?.duration || 0;
   const assetRows = (app.assets||[]).map(a => {
     const fname=(a.url||'').split('/').pop().split('?')[0]||a.url, fl=a.sizeKb>50||a.durationMs>500;
     return `<tr><td title="${escHtml(a.url)}">${fname.length>50?fname.slice(0,50)+'…':escHtml(fname)}</td><td>${escHtml(a.type||'—')}</td><td class="${fl?'flagged':''}">${a.sizeKb} KB</td><td class="${fl?'flagged':''}">${Math.round(a.durationMs)} ms</td></tr>`;
   }).join('');
+
   const apiInfo = isApiScan && app.appStoreUrl
     ? `<div style="margin-bottom:10px"><a href="${escHtml(app.appStoreUrl)}" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none;font-family:var(--mono)">View on App Store ↗</a></div>` : '';
   const noAsset = isApiScan && !hasPerfData
     ? `<div style="display:flex;align-items:center;gap:8px;padding:10px;background:var(--surface2);border-radius:6px;margin-top:8px"><span>⚡</span><p style="font-size:12px;color:var(--muted);line-height:1.5">Run <strong style="color:var(--text)">Speed Audit</strong> to measure this app's real load impact.</p></div>` : '';
+
   return `
     <div class="app-row" data-app="${escHtml(app.name)}">
       ${app.icon?`<img class="app-icon" src="${escHtml(app.icon)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`:''}<span class="app-icon-fb" style="${app.icon?'display:none':''}">${escHtml(initials)}</span>
@@ -552,7 +651,13 @@ function renderPerformance() {
   if (!perfReport?.metrics) { emptyEl.style.display='flex'; contentEl.style.display='none'; return; }
   emptyEl.style.display='none'; contentEl.style.display='block';
   const m = perfReport.metrics, cats = perfReport.categories;
-  const defs = [{key:'lcp',label:'LCP',good:2.5,avg:4.0,desc:'Largest Contentful Paint'},{key:'tbt',label:'TBT',good:200,avg:600,desc:'Total Blocking Time'},{key:'cls',label:'CLS',good:0.1,avg:0.25,desc:'Cumulative Layout Shift'},{key:'fcp',label:'FCP',good:1.8,avg:3.0,desc:'First Contentful Paint'},{key:'speedIndex',label:'Speed Index',good:3.4,avg:5.8,desc:'Visual population speed'}];
+  const defs = [
+    {key:'lcp',label:'LCP',good:2.5,avg:4.0,desc:'Largest Contentful Paint'},
+    {key:'tbt',label:'TBT',good:200,avg:600,desc:'Total Blocking Time'},
+    {key:'cls',label:'CLS',good:0.1,avg:0.25,desc:'Cumulative Layout Shift'},
+    {key:'fcp',label:'FCP',good:1.8,avg:3.0,desc:'First Contentful Paint'},
+    {key:'speedIndex',label:'Speed Index',good:3.4,avg:5.8,desc:'Visual population speed'},
+  ];
   const catCards = cats ? Object.entries(cats).map(([,cat])=>{ if(!cat)return''; const score=Math.round(cat.score*100); return`<div class="metric-card"><div class="m-label">${escHtml(cat.title)}</div><div class="m-val ${rateScore(score)}">${score}</div></div>`;}).join('') : '';
   contentEl.innerHTML = `<p class="perf-section-title">Category Scores</p><div class="perf-grid">${catCards}</div><p class="perf-section-title">Core Web Vitals</p><div class="perf-grid">${defs.map(d=>{const raw=m[d.key]||'N/A',val=parseMetricValue(raw),cls=raw==='N/A'?'na':rateMetric(val,d.good,d.avg);return`<div class="metric-card"><div class="m-label">${d.label}</div><div class="m-val ${cls}">${raw}</div><div class="m-desc">${d.desc}</div></div>`;}).join('')}</div>${perfReport.culprits?buildCulpritsSection(perfReport.culprits):''}${perfReport.audits&&cats?buildAuditSection(perfReport.audits,cats):''}`;
 }
@@ -565,7 +670,7 @@ function buildCulpritsSection(c) {
 
 function buildAuditSection(audits, cats) {
   const allRefs = Object.values(cats).flatMap(c=>c?.auditRefs||[]);
-  const failed = [];
+  const failed  = [];
   allRefs.forEach(ref => {
     if (ref.group==='metrics') return;
     const audit = audits[ref.id];
@@ -583,32 +688,53 @@ function toggleAudit(head) {
 
 /* ══════════════════════════════════════════════════════
    SPEED AUDIT TAB
+   FIX: ensureStorePassword() before launching Puppeteer
 ══════════════════════════════════════════════════════ */
 function initSpeedAudit() {
   const btn = document.getElementById('runSpeedTest');
   if (!btn) return;
-  document.querySelectorAll('.device-btn').forEach(b => b.addEventListener('click', function(){document.querySelectorAll('.device-btn').forEach(x=>x.classList.remove('active'));this.classList.add('active');}));
-  btn.addEventListener('click', () => {
+
+  document.querySelectorAll('.device-btn').forEach(b => {
+    b.addEventListener('click', function(){ document.querySelectorAll('.device-btn').forEach(x=>x.classList.remove('active')); this.classList.add('active'); });
+  });
+
+  btn.addEventListener('click', async () => {
     if (!ctx.storeUrl) { alert('No store URL detected.'); return; }
+
+    // FIX: Ask for store password before launching Puppeteer if needed
+    await ensureStorePassword();
+
     const device = document.querySelector('.device-btn.active')?.dataset.device || 'mobile';
     btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Running...';
     const loadingEl=document.getElementById('speed-test-loading'), logEl=document.getElementById('speed-test-log');
     loadingEl.style.display='block'; logEl.textContent='';
-    const params=new URLSearchParams({storeUrl:ctx.storeUrl,device});
-    if (ctx.storePassword) params.append('storePassword',ctx.storePassword);
+
+    const params=new URLSearchParams({storeUrl:ctx.storeUrl, device});
+    if (ctx.storePassword) params.append('storePassword', ctx.storePassword);
+
     const es=new EventSource(`/scan-speed?${params}`);
-    es.addEventListener('log',e=>{logEl.textContent+=JSON.parse(e.data).message+'\n';logEl.scrollTop=logEl.scrollHeight;});
-    es.addEventListener('speedResult',e=>{
+    es.addEventListener('log', e=>{ logEl.textContent+=JSON.parse(e.data).message+'\n'; logEl.scrollTop=logEl.scrollHeight; });
+    es.addEventListener('speedResult', e=>{
       const pr=JSON.parse(e.data);
-      if(pr?.metrics){const entry={url:ctx.storeUrl,device,date:new Date().toISOString(),performanceScore:parseInt(pr.metrics.performanceScore,10),accessibilityScore:Math.round((pr.categories?.accessibility?.score||0)*100),bestPracticesScore:Math.round((pr.categories?.['best-practices']?.score||0)*100),seoScore:Math.round((pr.categories?.seo?.score||0)*100),lcp:parseMetricValue(pr.metrics.lcp),tbt:parseMetricValue(pr.metrics.tbt),cls:parseMetricValue(pr.metrics.cls)};const hist=JSON.parse(localStorage.getItem('appAuditorHistory')||'[]');hist.push(entry);localStorage.setItem('appAuditorHistory',JSON.stringify(hist));}
+      if(pr?.metrics){
+        const entry={url:ctx.storeUrl,device,date:new Date().toISOString(),performanceScore:parseInt(pr.metrics.performanceScore,10),accessibilityScore:Math.round((pr.categories?.accessibility?.score||0)*100),bestPracticesScore:Math.round((pr.categories?.['best-practices']?.score||0)*100),seoScore:Math.round((pr.categories?.seo?.score||0)*100),lcp:parseMetricValue(pr.metrics.lcp),tbt:parseMetricValue(pr.metrics.tbt),cls:parseMetricValue(pr.metrics.cls)};
+        const hist=JSON.parse(localStorage.getItem('appAuditorHistory')||'[]');hist.push(entry);localStorage.setItem('appAuditorHistory',JSON.stringify(hist));
+      }
       renderSpeedResult(pr);
     });
-    es.addEventListener('appPerfData',e=>{const{apps:perfApps}=JSON.parse(e.data);if(scanState.appReport?.appBreakdown&&perfApps?.length){mergePerfIntoApps(scanState.appReport.appBreakdown,perfApps);if(document.getElementById('overview-results').style.display!=='none')renderOverview();}});
-    es.addEventListener('scanComplete',()=>{es.close();done();});
-    es.addEventListener('scanError',e=>{logEl.textContent+='\nERROR: '+JSON.parse(e.data).details;es.close();done();});
-    es.onerror=()=>{es.close();done();};
+    es.addEventListener('appPerfData', e=>{
+      const{apps:perfApps}=JSON.parse(e.data);
+      if(scanState.appReport?.appBreakdown&&perfApps?.length){
+        mergePerfIntoApps(scanState.appReport.appBreakdown,perfApps);
+        if(document.getElementById('overview-results').style.display!=='none') renderOverview();
+      }
+    });
+    es.addEventListener('scanComplete',()=>{ es.close(); done(); });
+    es.addEventListener('scanError', e=>{ logEl.textContent+='\nERROR: '+JSON.parse(e.data).details; es.close(); done(); });
+    es.onerror=()=>{ es.close(); done(); };
     function done(){loadingEl.style.display='none';btn.disabled=false;btn.innerHTML='<i class="fas fa-play"></i> Run Test';renderSpeedHistory();}
   });
+
   renderSpeedHistory();
 }
 
@@ -631,12 +757,15 @@ function renderSpeedHistory() {
 
 /* ══════════════════════════════════════════════════════
    IMAGE OPTIMIZER TAB
+   FIX: ensureStorePassword() before launching Puppeteer
 ══════════════════════════════════════════════════════ */
 function initImageScan() {
   const btn=document.getElementById('runImageScan');
   if(!btn)return;
-  btn.addEventListener('click',()=>{
+  btn.addEventListener('click', async ()=>{
     if(!ctx.storeUrl){alert('No store URL.');return;}
+    await ensureStorePassword();
+
     btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Scanning...';
     document.getElementById('image-scan-loading').style.display='block';
     document.getElementById('image-empty').style.display='none';
@@ -651,7 +780,11 @@ function initImageScan() {
     es.onerror=()=>{es.close();done();};
     function done(){document.getElementById('image-scan-loading').style.display='none';btn.disabled=false;btn.innerHTML='<i class="fas fa-rotate"></i> Re-scan';}
   });
-  document.getElementById('img-filter-pills')?.addEventListener('click',e=>{const pill=e.target.closest('.filter-pill');if(!pill)return;document.querySelectorAll('.filter-pill').forEach(p=>p.classList.remove('active'));pill.classList.add('active');renderImageTable(allImageData,pill.dataset.filter);});
+  document.getElementById('img-filter-pills')?.addEventListener('click',e=>{
+    const pill=e.target.closest('.filter-pill');if(!pill)return;
+    document.querySelectorAll('.filter-pill').forEach(p=>p.classList.remove('active'));
+    pill.classList.add('active');renderImageTable(allImageData,pill.dataset.filter);
+  });
 }
 
 function renderImageResults(data){
@@ -707,6 +840,7 @@ function initGhostScan(){
     loading.style.display='block';logEl.textContent='';
     document.getElementById('ghost-empty').style.display='none';
     document.getElementById('ghost-results').style.display='none';
+    // Ghost scan uses Admin API only — no storefront visit → no password needed
     const params=new URLSearchParams();
     if(ctx.storeUrl)params.append('storeUrl',ctx.storeUrl);
     const es=new EventSource(`/scan-ghost-code?${params}`);
@@ -735,23 +869,21 @@ function renderGhostResults(data){
     const isGhost=!app.isInstalled,cc=isGhost?'var(--danger)':'var(--green)';
     const filesHtml=(app.files||[]).map(f=>`<span style="display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;margin:2px;font-size:10px;font-family:var(--mono);color:var(--muted)">${escHtml(f)}</span>`).join('');
     const wastedHtml=isGhost&&app.wastedKb>0?`<span style="font-size:10px;font-family:var(--mono);color:var(--danger);margin-left:8px">~${app.wastedKb} KB wasted</span>`:'';
-    return`<div class="ghost-card ${isGhost?'is-ghost':'is-ok'}"><div class="ghost-card-header">${app.icon?`<img class="ghost-card-icon" src="${escHtml(app.icon)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`:''}
-    <div class="ghost-card-icon-fb" style="${app.icon?'display:none':''}">${isGhost?'👻':'✓'}</div>
-    <div class="ghost-card-body"><div class="ghost-card-name">${escHtml(app.name)} ${wastedHtml}</div><div class="ghost-card-cat">${escHtml(app.category||'Unknown')} · Found in ${app.fileCount||1} file${(app.fileCount||1)>1?'s':''}</div><div class="ghost-card-files" style="margin-top:4px">${filesHtml}</div>
-    <div class="confidence-bar" style="margin-top:8px"><div class="confidence-fill" style="width:${app.confidence}%;background:${cc}"></div></div>
-    <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:3px">${app.confidence}% ${isGhost?'ghost':'installed'} confidence</div></div>
-    <div class="ghost-card-actions"><span class="ghost-badge ${isGhost?'active':'ok'}">${isGhost?'GHOST':'OK'}</span></div></div></div>`;
+    return`<div class="ghost-card ${isGhost?'is-ghost':'is-ok'}"><div class="ghost-card-header">${app.icon?`<img class="ghost-card-icon" src="${escHtml(app.icon)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`:''}<div class="ghost-card-icon-fb" style="${app.icon?'display:none':''}">${isGhost?'👻':'✓'}</div><div class="ghost-card-body"><div class="ghost-card-name">${escHtml(app.name)} ${wastedHtml}</div><div class="ghost-card-cat">${escHtml(app.category||'Unknown')} · Found in ${app.fileCount||1} file${(app.fileCount||1)>1?'s':''}</div><div class="ghost-card-files" style="margin-top:4px">${filesHtml}</div><div class="confidence-bar" style="margin-top:8px"><div class="confidence-fill" style="width:${app.confidence}%;background:${cc}"></div></div><div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:3px">${app.confidence}% ${isGhost?'ghost':'installed'} confidence</div></div><div class="ghost-card-actions"><span class="ghost-badge ${isGhost?'active':'ok'}">${isGhost?'GHOST':'OK'}</span></div></div></div>`;
   }).join('');
 }
 
 /* ══════════════════════════════════════════════════════
    FONT OPTIMIZER TAB
+   FIX: ensureStorePassword() before launching Puppeteer
 ══════════════════════════════════════════════════════ */
 function initFontScan(){
   const btn=document.getElementById('runFontScan');
   if(!btn)return;
-  btn.addEventListener('click',()=>{
+  btn.addEventListener('click', async ()=>{
     if(!ctx.storeUrl){alert('No store URL.');return;}
+    await ensureStorePassword();
+
     btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Scanning...';
     document.getElementById('font-scan-loading').style.display='block';
     document.getElementById('font-empty').style.display='none';
@@ -787,12 +919,15 @@ function renderFontResults(data){
 
 /* ══════════════════════════════════════════════════════
    CSS ANALYSIS TAB
+   FIX: ensureStorePassword() before launching Puppeteer
 ══════════════════════════════════════════════════════ */
 function initCssScan(){
   const btn=document.getElementById('runCssScan');
   if(!btn)return;
-  btn.addEventListener('click',()=>{
+  btn.addEventListener('click', async ()=>{
     if(!ctx.storeUrl){alert('No store URL.');return;}
+    await ensureStorePassword();
+
     btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Analysing...';
     document.getElementById('css-scan-loading').style.display='block';
     document.getElementById('css-empty').style.display='none';
@@ -897,6 +1032,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initFontScan();
   initCssScan();
 
-  // 🚀 AUTO-BOOT — no user input needed
-  boot();
+  boot(); // Auto-boot — no user input needed
 });
