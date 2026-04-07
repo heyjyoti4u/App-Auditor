@@ -1121,3 +1121,20 @@ document.addEventListener('DOMContentLoaded', () => {
   initSpeedAudit(); initImageScan(); initGhostScan(); initFontScan(); initCssScan();
   tryRestoreLastScan();
 });
+window.startAutomaticScan = function() {
+    const storeUrl = document.getElementById('storeUrl').value;
+    if (storeUrl) {
+       document.getElementById('scanButton').click();
+    }
+};
+
+// Update auth scan button logic
+document.getElementById('authScanButton')?.addEventListener('click', () => {
+    const pwd = document.getElementById('storePassword').value;
+    if(pwd) {
+        document.getElementById('passwordGroup').style.display = 'none';
+        document.getElementById('scanButton').click();
+    } else {
+        alert("Please enter the store password to scan.");
+    }
+});
