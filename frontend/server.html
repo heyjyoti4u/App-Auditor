@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -8,9 +8,43 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
- <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
- </head>
+
+<script src="https://unpkg.com/@shopify/app-bridge@3.7.8"></script>
+<script>
+  let autoDetectedShop = "";
+  
+  // URL mein jo 'shop' parameter Shopify bhejta hai, use nikalna
+  const params = new URLSearchParams(window.location.search);
+  const shopFromUrl = params.get("shop");
+  const hostFromUrl = params.get("host");
+
+  if (shopFromUrl) {
+    autoDetectedShop = shopFromUrl;
+  } else if (window.__SHOPIFY_CONTEXT__ && window.__SHOPIFY_CONTEXT__.shop) {
+    autoDetectedShop = window.__SHOPIFY_CONTEXT__.shop;
+  }
+</script>
+
+<style>
+  /* Nayi Topbar style auto-detect ke liye */
+  .store-badge { background: #333; padding: 6px 12px; border-radius: 6px; font-size: 13px; font-family: var(--mono); color: #fff; margin-right: 12px; }
+  .auto-scan-overlay { position: fixed; top:0;left:0;right:0;bottom:0; background: rgba(10,10,12,0.95); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; }
+  .scan-box { background: #1a1b23; border: 1px solid #333; border-radius: 8px; padding: 30px; text-align: center; width: 400px; max-width: 90%; }
+  .scan-box h3 { margin: 0 0 10px 0; font-size: 18px; font-weight: 500;}
+  .scan-box p { color: #888; font-size: 14px; margin-bottom: 20px;}
+</style>
+
+</head>
 <body>
+
+<div id="auto-detect-overlay" class="auto-scan-overlay">
+  <div class="scan-box">
+    <h3>Welcome to App Auditor</h3>
+    <p>We are analyzing your store: <br><strong style="color:var(--accent)" id="overlay-shop-name">Detecting...</strong></p>
+    <div id="overlay-spinner" class="spinner" style="margin: 20px auto; border-color: rgba(255,255,255,0.1); border-top-color: var(--accent);"></div>
+    <div id="overlay-status" style="font-family: var(--mono); font-size: 12px; color: #888;">Initializing connection...</div>
+  </div>
+</div>
 
 <header class="topbar">
   <div class="topbar-brand"><span class="brand-dot"></span>APP AUDITOR</div>
@@ -24,20 +58,24 @@
     <button class="tab" data-tab="css">CSS Analysis</button>
     <button class="tab" data-tab="history">History</button>
   </nav>
-<div class="topbar-actions">
-    <input id="storeUrl" class="url-input" type="text" placeholder="store.myshopify.com"/>
-    <input id="adminToken" class="url-input" type="password" placeholder="shpat_..." style="width:160px;"/>
-    <button id="scanButton" class="scan-btn"><i class="fas fa-search"></i> Scan</button>
+  <div class="topbar-actions">
+    <div class="store-badge" id="active-store-badge">No Store Connected</div>
+    <input id="storeUrl" type="hidden" />
+    <input id="adminToken" type="hidden" />
+    <button id="scanButton" class="scan-btn" style="display:none;"><i class="fas fa-search"></i> Re-scan</button>
   </div>
 </header>
 
-<div class="options-bar">
-  <label class="option-toggle"><input type="checkbox" id="toggleApps" checked><span class="toggle-track"></span>App Scan</label>
-  <label class="option-toggle"><input type="checkbox" id="togglePerformance" checked><span class="toggle-track"></span>Performance</label>
-  <label class="option-toggle"><input type="radio" name="storeType" id="liveStore" value="live" checked>Live store</label>
-  <label class="option-toggle"><input type="radio" name="storeType" id="protectedStore" value="protected">Password protected</label>
-  <div id="passwordGroup" class="password-group disabled">
-    <input id="storePassword" type="password" class="url-input" placeholder="Store password" style="width:160px">
+<div class="options-bar" style="justify-content: flex-end;">
+   <label class="option-toggle"><input type="checkbox" id="toggleApps" checked style="display:none"></label>
+  <label class="option-toggle"><input type="checkbox" id="togglePerformance" checked style="display:none"></label>
+  <label class="option-toggle" style="display:none"><input type="radio" name="storeType" id="liveStore" value="live" checked></label>
+  <label class="option-toggle" style="display:none"><input type="radio" name="storeType" id="protectedStore" value="protected"></label>
+  
+  <div id="passwordGroup" class="password-group" style="display:none;">
+    <span style="color:var(--warn); margin-right: 10px; font-size: 13px;"><i class="fas fa-lock"></i> Store is password protected</span>
+    <input id="storePassword" type="password" class="url-input" placeholder="Enter store password" style="width:160px; border-color: var(--warn);">
+    <button id="authScanButton" class="scan-btn" style="background: var(--warn); color: #000; font-weight: bold; margin-left: 8px;">Unlock & Scan</button>
   </div>
 </div>
 
@@ -47,11 +85,11 @@
       <span class="t-dot" style="background:#f43f5e"></span>
       <span class="t-dot" style="background:#f59e0b"></span>
       <span class="t-dot" style="background:#4ade80"></span>
-      <span id="loading-message" class="t-title">Connecting...</span>
+      <span id="loading-message" class="t-title">Scanning Automatically...</span>
     </div>
     <div class="terminal-body"><div id="log-output"></div></div>
     <div id="spinner-container" class="terminal-footer">
-      <span class="spinner"></span><span id="spinner-label">Scanning...</span>
+      <span class="spinner"></span><span id="spinner-label">Gathering Data...</span>
     </div>
   </div>
 </div>
@@ -66,7 +104,6 @@
 
 <div id="app-shell" style="display:none">
 
-  <!-- OVERVIEW -->
   <div id="tab-overview" class="tab-panel active">
     <div class="shell-layout">
       <aside class="sidebar">
@@ -102,8 +139,8 @@
       <main class="main-content">
         <div id="overview-empty" class="empty-state">
           <div class="empty-icon">◈</div>
-          <p class="empty-title">No scan yet</p>
-          <p class="empty-sub">Enter a store URL above and hit Scan.</p>
+          <p class="empty-title">Waiting for data</p>
+          <p class="empty-sub">We are analyzing your store in the background.</p>
         </div>
         <div id="overview-results" style="display:none">
           <div class="results-header">
@@ -127,7 +164,6 @@
     </div>
   </div>
 
-  <!-- PERFORMANCE -->
   <div id="tab-performance" class="tab-panel">
     <div id="perf-empty" class="empty-state">
       <div class="empty-icon">⚡</div>
@@ -137,7 +173,6 @@
     <div id="perf-content" style="display:none;padding:24px 28px;max-width:1100px;margin:0 auto"></div>
   </div>
 
-  <!-- SPEED AUDIT -->
   <div id="tab-speed-audit" class="tab-panel">
     <div style="padding:24px 28px;max-width:900px;margin:0 auto">
       <div class="feature-card" style="margin-bottom:20px">
@@ -178,7 +213,6 @@
     </div>
   </div>
 
-  <!-- IMAGE OPTIMIZER -->
   <div id="tab-images" class="tab-panel">
     <div style="padding:24px 28px;max-width:1100px;margin:0 auto">
       <div class="feature-card" style="margin-bottom:20px">
@@ -262,7 +296,6 @@
     </div>
   </div>
 
-  <!-- GHOST SCRIPTS -->
   <div id="tab-ghost" class="tab-panel">
     <div style="padding:24px 28px;max-width:900px;margin:0 auto">
       <div class="feature-card" style="margin-bottom:20px">
@@ -303,7 +336,6 @@
     </div>
   </div>
 
-  <!-- FONT OPTIMIZER -->
   <div id="tab-fonts" class="tab-panel">
     <div style="padding:24px 28px;max-width:1000px;margin:0 auto">
       <div class="feature-card" style="margin-bottom:20px">
@@ -332,7 +364,6 @@
       </div>
 
       <div id="font-results" style="display:none">
-        <!-- Score + Stats -->
         <div class="img-overview-grid" style="margin-bottom:12px">
           <div class="feature-card img-grade-card">
             <p class="sidebar-label" style="text-align:center">Font Score</p>
@@ -349,7 +380,6 @@
           </div>
         </div>
 
-        <!-- Issues + Recommendations -->
         <div class="img-detail-grid" style="margin-bottom:12px">
           <div class="feature-card">
             <h3 class="feature-card-title" style="margin-bottom:14px">Issues Detected</h3>
@@ -361,7 +391,6 @@
           </div>
         </div>
 
-        <!-- Font Files Table -->
         <div class="feature-card">
           <h3 class="feature-card-title" style="margin-bottom:14px">Font Files</h3>
           <div style="overflow-x:auto">
@@ -372,7 +401,6 @@
           </div>
         </div>
 
-        <!-- Loaded Font Faces -->
         <div class="feature-card" style="margin-top:12px">
           <h3 class="feature-card-title" style="margin-bottom:14px">Loaded Font Faces</h3>
           <div style="overflow-x:auto">
@@ -386,7 +414,6 @@
     </div>
   </div>
 
-  <!-- CSS ANALYSIS -->
   <div id="tab-css" class="tab-panel">
     <div style="padding:24px 28px;max-width:1100px;margin:0 auto">
       <div class="feature-card" style="margin-bottom:20px">
@@ -402,7 +429,6 @@
             <i class="fas fa-rotate"></i> Analyse CSS
           </button>
         </div>
-        <!-- Inline metrics preview bar (like SpeedScope) -->
         <div id="css-topbar-metrics" style="display:none;margin-top:12px">
           <div class="css-metrics-bar">
             <div class="css-metric-item"><span class="css-metric-label">Total CSS Size</span><span class="css-metric-val" id="css-bar-size">—</span></div>
@@ -427,7 +453,6 @@
       </div>
 
       <div id="css-results" style="display:none">
-        <!-- Score row -->
         <div class="css-score-row">
           <div class="feature-card css-score-card">
             <p class="sidebar-label">CSS Score</p>
@@ -456,7 +481,6 @@
           </div>
         </div>
 
-        <!-- Savings visual + Recommendations -->
         <div class="img-detail-grid" style="margin-bottom:12px">
           <div class="feature-card">
             <h3 class="feature-card-title" style="margin-bottom:14px">Size Breakdown</h3>
@@ -479,7 +503,6 @@
           </div>
         </div>
 
-        <!-- CSS File Breakdown Table -->
         <div class="feature-card">
           <h3 class="feature-card-title" style="margin-bottom:14px">CSS File Usage</h3>
           <div style="overflow-x:auto">
@@ -493,7 +516,6 @@
     </div>
   </div>
 
-  <!-- HISTORY -->
   <div id="tab-history" class="tab-panel">
     <div style="padding:24px 28px;max-width:900px;margin:0 auto">
       <div class="results-header" style="margin-bottom:20px">
@@ -514,6 +536,44 @@
   </div>
 
 </div>
+<script>
+  // AUTO-TRIGGER LOGIC JAISE HI PAGE LOAD HO
+  document.addEventListener("DOMContentLoaded", () => {
+    if (autoDetectedShop) {
+      document.getElementById('overlay-shop-name').innerText = autoDetectedShop;
+      document.getElementById('storeUrl').value = autoDetectedShop;
+      document.getElementById('active-store-badge').innerText = autoDetectedShop;
+      
+      // Chupke se check karo password to nahi chahiye
+      fetch(`/check-password?storeUrl=${encodeURIComponent(autoDetectedShop)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.protected) {
+            document.getElementById('auto-detect-overlay').style.display = 'none';
+            document.getElementById('app-shell').style.display = 'block';
+            document.getElementById('passwordGroup').style.display = 'flex';
+          } else {
+             // Password nahi chahiye, toh direct scan chalu karo client.js wale function se
+             document.getElementById('overlay-status').innerText = 'Initializing API Scans...';
+             setTimeout(() => {
+                document.getElementById('auto-detect-overlay').style.display = 'none';
+                if(typeof window.startAutomaticScan === 'function') {
+                    window.startAutomaticScan(); 
+                } else {
+                    document.getElementById('scanButton').click();
+                }
+             }, 1000);
+          }
+        });
+    } else {
+      document.getElementById('auto-detect-overlay').innerHTML = `
+        <div class="scan-box" style="border-color:var(--danger)">
+          <h3>Connection Error</h3>
+          <p style="color:var(--danger)">Could not detect store URL. Please launch the app from Shopify Admin.</p>
+        </div>`;
+    }
+  });
+</script>
 <script src="client.js"></script>
 </body>
 </html>
