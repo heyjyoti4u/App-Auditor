@@ -294,26 +294,58 @@ app.get('/auth/callback', async (req, res) => {
 // ════════════════════════════════════════════════════════
 // /init — Returns store context
 // ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+// /init  ← REPLACE YOUR EXISTING /init WITH THIS
+// Called by client on every page load.
+// Returns storeUrl from .env or MongoDB, never from user input.
+// ════════════════════════════════════════════════════════
 app.get('/init', async (req, res) => {
+  // ?shop= is passed by Shopify when app is embedded in admin
   const shopParam = req.query.shop || '';
-  let storeHostname = shopParam || ENV_STORE_URL || '';
-  try { storeHostname = new URL(normalizeUrl(storeHostname)).hostname; } catch { }
 
-  let hasToken = false;
-  if (storeHostname) {
-    const storeData = await Store.findOne({ shop: storeHostname });
-    if (storeData && storeData.accessToken) {
-      hasToken = true;
-    }
+  // Resolve the store hostname:
+  // Priority: ?shop= param → ENV_STORE_URL → MongoDB (first active store)
+  let storeHostname = '';
+
+  if (shopParam) {
+    // Normalize: strip https://, keep just hostname
+    try { storeHostname = new URL(normalizeUrl(shopParam)).hostname; }
+    catch { storeHostname = shopParam.replace(/^https?:\/\//, '').split('/')[0]; }
   }
-  
-  if (!hasToken && ENV_ADMIN_TOKEN) {
-    hasToken = true;
+
+  if (!storeHostname && ENV_STORE_URL) {
+    try { storeHostname = new URL(normalizeUrl(ENV_STORE_URL)).hostname; }
+    catch { storeHostname = ENV_STORE_URL; }
+  }
+
+  // If still nothing and we have MongoDB, grab first active store
+  if (!storeHostname) {
+    try {
+      const anyStore = await Store.findOne({ isActive: true });
+      if (anyStore?.shop) storeHostname = anyStore.shop;
+    } catch { /* no DB or no store */ }
+  }
+
+  // Check if we have a token for this store
+  let hasToken = false;
+
+  if (storeHostname) {
+    // Check MongoDB first
+    try {
+      const storeData = await Store.findOne({ shop: storeHostname });
+      if (storeData?.accessToken) hasToken = true;
+    } catch { /* no DB */ }
+
+    // Fall back to env token
+    if (!hasToken && ENV_ADMIN_TOKEN) hasToken = true;
+  } else {
+    // No store URL but env token exists → still useful
+    if (ENV_ADMIN_TOKEN) hasToken = true;
   }
 
   res.json({
     storeUrl: storeHostname ? `https://${storeHostname}` : '',
-    hasToken: hasToken
+    hasToken,
   });
 });
 
