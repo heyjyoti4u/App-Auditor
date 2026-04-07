@@ -1040,30 +1040,38 @@ app.get('/check-password', async (req, res) => {
 });
 
 // ── SERVE ─────────────────────────────────────────────────
+// ── SERVE & AUTO-OAUTH REDIRECT ───────────────────────────
 app.get('/', async (req, res) => {
   try {
+    const shop = req.query.shop;
+
+    // MAGICAL FIX: Agar shop parameter hai par database mein token nahi hai, 
+    // toh automatically install/auth flow trigger kar do.
+    if (shop) {
+      const storeData = await Store.findOne({ shop: shop });
+      if (!storeData || !storeData.accessToken) {
+        console.log(`[System] Token missing for ${shop}. Redirecting to OAuth...`);
+        return res.redirect(`/auth?shop=${shop}`);
+      }
+    }
+
     const htmlPath = path.join(__dirname, '../frontend', 'server.html');
     let htmlContent = await fs.readFile(htmlPath, 'utf8');
-
-    // Extract query parameters from Shopify's request
-    const shop = req.query.shop || '';
     
-    // Inject parameters directly into a <script> block in the HTML head
+    // In parameters ko ek script tag banakar HTML ke head mein daal do
     const injectionScript = `
       <script>
         window.__SHOPIFY_CONTEXT__ = {
-          shop: "${shop}"
+          shop: "${shop || ''}"
         };
       </script>
     `;
 
-    // Insert the script right before the closing </head> tag
     htmlContent = htmlContent.replace('</head>', `${injectionScript}\n</head>`);
-    
     res.send(htmlContent);
   } catch (error) {
-    console.error('Error rendering HTML:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('[Server] Failed to serve HTML:', error);
+    res.status(500).send('Error loading the app UI.');
   }
 });
 
