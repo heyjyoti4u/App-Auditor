@@ -10,6 +10,20 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 dotenv.config();
 
+import mongoose from 'mongoose';
+
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('[Server] MongoDB Connected'))
+  .catch(err => console.error('[Server] DB Error:', err));
+
+const storeSchema = new mongoose.Schema({
+  shop: { type: String, required: true, unique: true },
+  accessToken: { type: String, required: true },
+  isActive: { type: Boolean, default: true }
+});
+
+const Store = mongoose.model('Store', storeSchema);
+
 const app = express();
 const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
