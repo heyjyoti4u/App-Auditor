@@ -118,7 +118,7 @@ function buildAppPerfMap(audits, fingerprintMap) {
 
 function launchBrowser() {
   return puppeteer.launch({
-    headless: new, // ya "new" agar purana version hai
+    headless: "new", // ya "new" agar purana version hai
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
