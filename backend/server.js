@@ -292,60 +292,66 @@ app.get('/auth/callback', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
-// /init — Returns store context
-// ════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════
-// /init  ← REPLACE YOUR EXISTING /init WITH THIS
-// Called by client on every page load.
-// Returns storeUrl from .env or MongoDB, never from user input.
+// /init  — REPLACE THIS ENTIRE BLOCK IN YOUR server.js
+// Returns storeUrl + hasToken from MongoDB OAuth / ENV
+// Added: tokenSource field + console.log for debugging
 // ════════════════════════════════════════════════════════
 app.get('/init', async (req, res) => {
-  // ?shop= is passed by Shopify when app is embedded in admin
   const shopParam = req.query.shop || '';
-
-  // Resolve the store hostname:
-  // Priority: ?shop= param → ENV_STORE_URL → MongoDB (first active store)
   let storeHostname = '';
+  let hasToken      = false;
+  let tokenSource   = 'none';
 
+  // Priority: ?shop= param → ENV_STORE_URL → MongoDB first active store
   if (shopParam) {
-    // Normalize: strip https://, keep just hostname
     try { storeHostname = new URL(normalizeUrl(shopParam)).hostname; }
     catch { storeHostname = shopParam.replace(/^https?:\/\//, '').split('/')[0]; }
   }
-
   if (!storeHostname && ENV_STORE_URL) {
     try { storeHostname = new URL(normalizeUrl(ENV_STORE_URL)).hostname; }
     catch { storeHostname = ENV_STORE_URL; }
   }
-
-  // If still nothing and we have MongoDB, grab first active store
   if (!storeHostname) {
     try {
       const anyStore = await Store.findOne({ isActive: true });
-      if (anyStore?.shop) storeHostname = anyStore.shop;
-    } catch { /* no DB or no store */ }
+      if (anyStore?.shop) { storeHostname = anyStore.shop; tokenSource = 'db-fallback'; }
+    } catch {}
   }
 
-  // Check if we have a token for this store
-  let hasToken = false;
-
   if (storeHostname) {
-    // Check MongoDB first
+    // ── Try MongoDB OAuth token first (most reliable) ──
     try {
       const storeData = await Store.findOne({ shop: storeHostname });
-      if (storeData?.accessToken) hasToken = true;
-    } catch { /* no DB */ }
+      if (storeData?.accessToken) {
+        hasToken    = true;
+        tokenSource = 'oauth-db';
+        console.log(`[Init] ✅ OAuth token found in DB for: ${storeHostname}`);
+      } else {
+        console.log(`[Init] ⚠️  DB record ${storeData ? 'exists but no token' : 'not found'} for: ${storeHostname}`);
+      }
+    } catch (dbErr) {
+      console.log(`[Init] ⚠️  DB query failed: ${dbErr.message}`);
+    }
 
-    // Fall back to env token
-    if (!hasToken && ENV_ADMIN_TOKEN) hasToken = true;
-  } else {
-    // No store URL but env token exists → still useful
-    if (ENV_ADMIN_TOKEN) hasToken = true;
+    // ── Fall back to ENV token if DB has nothing ──
+    if (!hasToken && ENV_ADMIN_TOKEN) {
+      hasToken    = true;
+      tokenSource = 'env';
+      console.log(`[Init] ✅ Using ENV_ADMIN_TOKEN for: ${storeHostname}`);
+    }
+  } else if (ENV_ADMIN_TOKEN) {
+    hasToken    = true;
+    tokenSource = 'env-no-store';
+  }
+
+  if (!hasToken) {
+    console.log(`[Init] ❌ No token. shopParam="${shopParam}" hostname="${storeHostname}" ENV_TOKEN=${!!ENV_ADMIN_TOKEN} MONGO=${!!process.env.MONGO_URI}`);
   }
 
   res.json({
-    storeUrl: storeHostname ? `https://${storeHostname}` : '',
+    storeUrl:    storeHostname ? `https://${storeHostname}` : '',
     hasToken,
+    tokenSource, // shown in browser console — helps diagnose issues
   });
 });
 
