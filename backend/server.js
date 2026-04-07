@@ -403,15 +403,26 @@ app.get('/scan-all', async (req, res) => {
       appReport = await scanStoreLogic(page, log, fingerprintMap);
     }
 
-    if (runPerfScan === 'true') {
+if (runPerfScan === 'true') {
       log(`[Perf] Running Lighthouse (${device || 'desktop'})...`);
+      
+      // FIX: Purana page close karo taaki RAM free ho jaye Lighthouse ke liye
+      try {
+        if (page && !page.isClosed()) {
+          await page.close(); 
+        }
+      } catch (e) {}
+
       const isMobile = device === 'mobile';
       const settings = isMobile
         ? { formFactor:'mobile', screenEmulation:{mobile:true,width:360,height:640,deviceScaleFactor:2.625,disabled:false}, throttlingMethod:'simulate', throttling:{rttMs:150,throughputKbps:1638.4,cpuSlowdownMultiplier:4} }
         : { formFactor:'desktop', screenEmulation:{mobile:false} };
 
       const chromePort = new URL(browser.wsEndpoint()).port;
-      const { lhr } = await lighthouse(page.url(), { port: chromePort, output: 'json', settings });
+      
+      // FIX: page.url() ki jagah finalUrl use karo kyunki humne page close kar diya hai
+      const { lhr } = await lighthouse(finalUrl, { port: chromePort, output: 'json', settings });
+      
       const audits = lhr.audits;
       const metrics = {
         lcp: audits['largest-contentful-paint']?.displayValue  ?? 'N/A',
