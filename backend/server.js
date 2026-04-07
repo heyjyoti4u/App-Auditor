@@ -118,11 +118,19 @@ function buildAppPerfMap(audits, fingerprintMap) {
 
 function launchBrowser() {
   return puppeteer.launch({
-    headless: "new",
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu']
+    headless: new, // ya "new" agar purana version hai
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage', // Yeh Docker/Render ke liye sabse zaroori hai
+      '--disable-gpu',
+      '--no-zygote',             // Memory leak rokkta hai
+      '--disable-software-rasterizer',
+      '--js-flags="--max-old-space-size=256"', // V8 engine ko limit karta hai
+      '--proxy-server=direct://',
+      '--proxy-bypass-list=*'
+    ]
   });
-}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
