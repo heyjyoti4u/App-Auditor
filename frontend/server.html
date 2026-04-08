@@ -133,22 +133,42 @@
 <body>
 
 <!-- BOOT OVERLAY: shown on every load until scan completes -->
+<!-- 
+  REPLACE ONLY the boot-overlay div in your server.html with this.
+  The rest of the HTML stays the same.
+  
+  Key changes:
+  1. Added "Start Scan" button — user can click to trigger scan manually
+  2. Added "Auto-scan in Xs..." countdown so user knows scan will auto-start  
+  3. Password section + error section unchanged
+-->
+
 <div id="boot-overlay">
   <div class="boot-card">
     <div class="boot-logo"><span class="dot"></span>APP AUDITOR</div>
 
     <div id="boot-detecting">
-      <!-- State 1: Detecting -->
       <div class="boot-store" id="boot-store-name">Detecting your store...</div>
-      <div class="boot-sub">Connecting to Shopify Admin API</div>
+      <div class="boot-sub" id="boot-sub-text">Connecting to Shopify Admin API</div>
+
+      <!-- Manual scan button — visible once store is detected -->
+      <div id="scan-btn-wrap" style="display:none;margin-top:16px">
+        <button id="boot-scan-btn" class="scan-btn" style="width:100%;justify-content:center;height:44px;font-size:14px;border-radius:10px">
+          <i class="fas fa-play" style="margin-right:6px"></i> Start Scan
+        </button>
+        <div id="boot-auto-countdown" style="font-size:11px;color:var(--muted);font-family:var(--mono);text-align:center;margin-top:8px">
+          Auto-starting in <span id="countdown-num">5</span>s...
+        </div>
+      </div>
+
       <div class="boot-status" id="boot-status">
         <span class="spinner" style="width:10px;height:10px;border-width:1.5px;flex-shrink:0"></span>
         <span id="boot-status-text">Loading...</span>
       </div>
     </div>
 
-    <!-- State 2: Password required -->
-    <div id="pwd-section">
+    <!-- Password prompt -->
+    <div id="pwd-section" style="display:none;margin-top:20px">
       <div style="font-size:13px;color:var(--warn);margin-bottom:6px">
         <i class="fas fa-lock" style="margin-right:6px"></i>Store is password protected
       </div>
@@ -161,8 +181,8 @@
       </div>
     </div>
 
-    <!-- State 3: Error -->
-    <div id="error-section">
+    <!-- Error section -->
+    <div id="error-section" style="display:none;margin-top:16px;padding:12px 14px;background:var(--danger-bg);border:1px solid rgba(244,63,94,.25);border-radius:8px;font-size:12px;color:var(--danger);font-family:var(--mono);text-align:left;line-height:1.6;white-space:pre-wrap">
       <i class="fas fa-triangle-exclamation" style="margin-right:6px"></i>
       <span id="error-text">Something went wrong.</span>
     </div>
