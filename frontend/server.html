@@ -143,32 +143,50 @@
   3. Password section + error section unchanged
 -->
 
+
 <div id="boot-overlay">
   <div class="boot-card">
     <div class="boot-logo"><span class="dot"></span>APP AUDITOR</div>
-
-    <div id="boot-detecting">
+ 
+    <!-- Step 1: Detecting store (auto) -->
+    <div id="boot-step-detect">
       <div class="boot-store" id="boot-store-name">Detecting your store...</div>
-      <div class="boot-sub" id="boot-sub-text">Connecting to Shopify Admin API</div>
-
-      <!-- Manual scan button — visible once store is detected -->
-      <div id="scan-btn-wrap" style="display:none;margin-top:16px">
-        <button id="boot-scan-btn" class="scan-btn" style="width:100%;justify-content:center;height:44px;font-size:14px;border-radius:10px">
-          <i class="fas fa-play" style="margin-right:6px"></i> Start Scan
-        </button>
-        <div id="boot-auto-countdown" style="font-size:11px;color:var(--muted);font-family:var(--mono);text-align:center;margin-top:8px">
-          Auto-starting in <span id="countdown-num">5</span>s...
-        </div>
-      </div>
-
-      <div class="boot-status" id="boot-status">
+      <div class="boot-sub" id="boot-sub-text">Reading environment config</div>
+      <div class="boot-status" id="boot-status-detect">
         <span class="spinner" style="width:10px;height:10px;border-width:1.5px;flex-shrink:0"></span>
-        <span id="boot-status-text">Loading...</span>
+        <span>Connecting...</span>
       </div>
     </div>
-
-    <!-- Password prompt -->
-    <div id="pwd-section" style="display:none;margin-top:20px">
+ 
+    <!-- Step 2: Token entry (shown after store detected) -->
+    <div id="boot-step-token" style="display:none;margin-top:18px">
+      <div style="font-size:12px;color:var(--muted);font-family:var(--mono);margin-bottom:10px;text-align:left">
+        <i class="fas fa-key" style="margin-right:6px;color:var(--accent)"></i>
+        Enter Shopify Admin API Token
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <input
+          id="token-input"
+          class="url-input"
+          type="password"
+          placeholder="shpat_xxxxxxxxxxxxxxxxxxxx"
+          autocomplete="off"
+          style="flex:1;width:auto;font-family:var(--mono);font-size:12px"
+        >
+        <button id="token-submit" class="scan-btn" style="padding:7px 14px;flex-shrink:0">
+          <i class="fas fa-arrow-right"></i>
+        </button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5;text-align:left">
+        Shopify Admin → Settings → Apps → Develop apps → Create token<br>
+        Required scopes: <span style="color:var(--accent);font-family:var(--mono)">read_apps, read_products</span>
+      </div>
+      <!-- Verify status shown here -->
+      <div id="token-verify-status" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px;font-family:var(--mono);line-height:1.6;text-align:left;white-space:pre-wrap"></div>
+    </div>
+ 
+    <!-- Step 3: Password (only for password-protected stores, no token) -->
+    <div id="pwd-section" style="display:none;margin-top:16px">
       <div style="font-size:13px;color:var(--warn);margin-bottom:6px">
         <i class="fas fa-lock" style="margin-right:6px"></i>Store is password protected
       </div>
@@ -180,7 +198,7 @@
         </button>
       </div>
     </div>
-
+ 
     <!-- Error section -->
     <div id="error-section" style="display:none;margin-top:16px;padding:12px 14px;background:var(--danger-bg);border:1px solid rgba(244,63,94,.25);border-radius:8px;font-size:12px;color:var(--danger);font-family:var(--mono);text-align:left;line-height:1.6;white-space:pre-wrap">
       <i class="fas fa-triangle-exclamation" style="margin-right:6px"></i>
