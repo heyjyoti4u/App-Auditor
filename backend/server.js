@@ -838,4 +838,126 @@ app.get('/', async (req, res) => {
   }
 });
 
+
+// ══════════════════════════════════════════════════════
+// ADD THESE TWO ENDPOINTS TO YOUR server.js
+// Place them BEFORE the app.listen() call at the bottom
+// ══════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════
+// /init — auto-detect store URL from env (no token)
+// ════════════════════════════════════════════════════════
+app.get('/init', async (req, res) => {
+  try {
+    // Get store URL from env (set once, never changes)
+    let storeUrl = ENV_STORE_URL ? normalizeUrl(ENV_STORE_URL) : '';
+    const shopParam = req.query.shop ? normalizeUrl(req.query.shop) : '';
+    if (!storeUrl && shopParam) storeUrl = shopParam;
+
+    if (!storeUrl) {
+      return res.json({ storeUrl: '', hasToken: false, tokenSource: 'none', error: 'SHOPIFY_STORE_URL not set in environment.' });
+    }
+
+    // Normalize: ensure https and no trailing slash
+    storeUrl = storeUrl.replace(/\/$/, '');
+
+    return res.json({
+      storeUrl,
+      hasToken: false,          // Token is never stored server-side — user always enters it
+      tokenSource: 'manual',
+      message: 'Enter your Admin API token to scan this store.',
+    });
+  } catch (err) {
+    console.error('[/init]', err.message);
+    res.json({ storeUrl: '', hasToken: false, tokenSource: 'error', error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════
+// /verify-token — validate that the admin token actually
+//                 belongs to THIS store (URL + token match)
+// ════════════════════════════════════════════════════════
+app.get('/verify-token', async (req, res) => {
+  const { storeUrl, adminToken } = req.query;
+
+  if (!storeUrl || !adminToken) {
+    return res.json({ valid: false, error: 'storeUrl and adminToken are required.' });
+  }
+
+  const host = extractHostname(storeUrl);
+
+  try {
+    // Lightweight GraphQL call — just fetch shop name to verify the token
+    const gqlRes = await axios({
+      url:     `https://${host}/admin/api/2024-01/graphql.json`,
+      method:  'POST',
+      headers: {
+        'X-Shopify-Access-Token': adminToken,
+        'Content-Type': 'application/json',
+      },
+      data: JSON.stringify({ query: `{ shop { name myshopifyDomain } }` }),
+      timeout: 15000,
+      validateStatus: () => true,   // handle 4xx ourselves
+    });
+
+    const status = gqlRes.status;
+    const errors = gqlRes.data?.errors;
+    const shop   = gqlRes.data?.data?.shop;
+
+    // 401 / 403 = wrong token or wrong store
+    if (status === 401 || status === 403) {
+      return res.json({
+        valid: false,
+        error: `❌ Token rejected (HTTP ${status}).\nThis token does not belong to ${host}.\nPlease create a token in the Shopify Admin of this exact store.`,
+      });
+    }
+
+    // GraphQL-level access errors
+    if (errors?.length) {
+      const msg = errors.map(e => e.message).join('; ');
+      const isAuth = /access|unauthorized|permission|scope/i.test(msg);
+      return res.json({
+        valid: false,
+        error: isAuth
+          ? `❌ Token lacks required scopes.\nNeeded: read_apps, read_products.\nError: ${msg}`
+          : `❌ GraphQL error: ${msg}`,
+      });
+    }
+
+    // Mismatch: token works but points to a different store
+    if (shop?.myshopifyDomain) {
+      const tokenHost    = shop.myshopifyDomain.toLowerCase().replace(/\/$/, '');
+      const requestedHost = host.toLowerCase().replace(/\/$/, '');
+      // Compare base domains (strip .myshopify.com for custom domain support)
+      const normalize = h => h.replace(/\.myshopify\.com$/, '');
+      if (normalize(tokenHost) !== normalize(requestedHost) && tokenHost !== requestedHost) {
+        return res.json({
+          valid: false,
+          error: `❌ Token mismatch!\nToken belongs to: ${tokenHost}\nYou entered: ${requestedHost}\n\nPlease enter the token for ${requestedHost}.`,
+        });
+      }
+    }
+
+    if (!shop) {
+      return res.json({ valid: false, error: `❌ Could not read shop data. Status: ${status}` });
+    }
+
+    // ✅ Token is valid and matches this store
+    return res.json({
+      valid: true,
+      shopName: shop.name,
+      domain: shop.myshopifyDomain,
+    });
+
+  } catch (err) {
+    const is401 = err.response?.status === 401 || err.message.includes('401');
+    return res.json({
+      valid: false,
+      error: is401
+        ? `❌ 401 Unauthorized. Token is invalid or doesn't match ${host}.`
+        : `❌ Connection error: ${err.message}`,
+    });
+  }
+});
+
 app.listen(port, () => console.log(`[Server] App Auditor running on port ${port}`));
