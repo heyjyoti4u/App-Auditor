@@ -1,5 +1,4 @@
 import '@shopify/shopify-api/adapters/node';
-import { shopifyApi, LATEST_API_VERSION } from '@shopify/shopify-api';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,46 +9,16 @@ import lighthouse from 'lighthouse';
 import { URL } from 'url';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import mongoose from 'mongoose';
 
 dotenv.config();
-
-// ── MONGODB CONNECTION ───────────────────────────────────
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('[Server] MongoDB Connected'))
-  .catch(err => console.error('[Server] DB Error:', err));
-
-// Update Schema to handle expiring tokens
-const storeSchema = new mongoose.Schema({
-  shop:        { type: String, required: true, unique: true },
-  accessToken: { type: String, required: true },
-  scope:       { type: String },
-  expires_in:  { type: Number },
-  isActive:    { type: Boolean, default: true }
-});
-const Store = mongoose.model('Store', storeSchema);
 
 const app = express();
 const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-const ENV_ADMIN_TOKEN    = process.env.SHOPIFY_ADMIN_TOKEN;
-const ENV_STORE_URL      = process.env.SHOPIFY_STORE_URL;
-const SHOPIFY_API_KEY    = process.env.SHOPIFY_API_KEY;
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
-const APP_URL            = process.env.APP_URL;
-
-// ── SHOPIFY API INITIALIZATION ───────────────────────────
-// This is the CRITICAL fix for the deprecated offline token error
-const shopify = shopifyApi({
-  apiKey: SHOPIFY_API_KEY,
-  apiSecretKey: SHOPIFY_API_SECRET,
-  scopes: ['read_products', 'read_apps', 'read_themes', 'read_script_tags'],
-  hostName: new URL(APP_URL).host,
-  apiVersion: LATEST_API_VERSION,
-  isEmbeddedApp: true,
-});
+const ENV_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
+const ENV_STORE_URL   = process.env.SHOPIFY_STORE_URL;
 
 // ── IFRAME FIX ────────────────────────────────────────────
 app.use((req, res, next) => {
@@ -92,24 +61,6 @@ function extractHostname(urlOrHost) {
   if (!s.startsWith('http')) s = 'https://' + s;
   try { return new URL(s).hostname.toLowerCase().replace(/\/$/, ''); }
   catch { return s.replace(/^https?:\/\//, '').split('/')[0].toLowerCase(); }
-}
-
-async function resolveToken(hostname) {
-  if (ENV_ADMIN_TOKEN) {
-    console.log(`[Token] ✅ Using ENV_ADMIN_TOKEN (primary) for ${hostname}`);
-    return { token: ENV_ADMIN_TOKEN, source: 'env' };
-  }
-
-  try {
-    const storeData = await Store.findOne({ shop: { $regex: new RegExp(`^${hostname}$`, 'i') } });
-    if (storeData?.accessToken) {
-      console.log(`[Token] DB token found for ${hostname}`);
-      return { token: storeData.accessToken, source: 'oauth-db' };
-    }
-  } catch (e) { console.log(`[Token] DB error: ${e.message}`); }
-
-  console.log(`[Token] ❌ No token for ${hostname}`);
-  return { token: null, source: 'none' };
 }
 
 function findCulprits(audits, fingerprintMap) {
@@ -282,94 +233,12 @@ async function shopifyGetAllPages(baseUrl, token, dataKey) {
 }
 
 // ════════════════════════════════════════════════════════
-// NEW OAUTH FLOW - USING OFFICIAL SHOPIFY LIBRARY
-// Handles the deprecation of offline tokens automatically
-// ════════════════════════════════════════════════════════
-app.get('/auth', async (req, res) => {
-  try {
-    const shop = shopify.utils.sanitizeShop(req.query.shop, true);
-    if (!shop) {
-      return res.status(400).send('Invalid shop parameter');
-    }
-    console.log(`[OAuth] Starting authorization for: ${shop}`);
-    
-    await shopify.auth.begin({
-      shop,
-      callbackPath: '/auth/callback',
-      isOnline: false,
-      rawRequest: req,
-      rawResponse: res,
-    });
-  } catch (error) {
-    console.error(`[OAuth] Begin Error for ${req.query.shop}:`, error);
-    res.status(500).send('Auth begin failed');
-  }
-});
-
-app.get('/auth/callback', async (req, res) => {
-  try {
-    console.log(`[OAuth] Processing callback for: ${req.query.shop}`);
-    const callbackResponse = await shopify.auth.callback({
-      rawRequest: req,
-      rawResponse: res,
-    });
-
-    const session = callbackResponse.session;
-
-    await Store.findOneAndUpdate(
-      { shop: session.shop },
-      { 
-        shop: session.shop, 
-        accessToken: session.accessToken, 
-        scope: session.scope,
-        expires_in: session.expires ? session.expires.getTime() : null,
-        isActive: true 
-      },
-      { upsert: true, new: true }
-    );
-
-    console.log(`[OAuth] ✅ New format token saved to DB for ${session.shop}`);
-    res.redirect(`/?shop=${session.shop}&host=${req.query.host}`);
-  } catch (error) {
-    console.error('[OAuth] Callback Error:', error.message);
-    res.status(500).send(`Authentication failed: ${error.message}`);
-  }
-});
-
-// ════════════════════════════════════════════════════════
-// /init — returns storeUrl + hasToken
-// ════════════════════════════════════════════════════════
-app.get('/init', async (req, res) => {
-  const shopParam   = req.query.shop || '';
-  let storeHostname = '';
-
-  if (shopParam)         storeHostname = extractHostname(shopParam);
-  if (!storeHostname && ENV_STORE_URL) storeHostname = extractHostname(ENV_STORE_URL);
-  if (!storeHostname) {
-    try { const any = await Store.findOne({ isActive: true }); if (any?.shop) storeHostname = any.shop; } catch {}
-  }
-
-  const { token, source } = storeHostname
-    ? await resolveToken(storeHostname)
-    : { token: ENV_ADMIN_TOKEN || null, source: ENV_ADMIN_TOKEN ? 'env' : 'none' };
-
-  console.log(`[Init] shop="${storeHostname}" tokenSource="${source}" hasToken=${!!token}`);
-
-  res.json({
-    storeUrl:    storeHostname ? `https://${storeHostname}` : '',
-    hasToken:    !!token,
-    tokenSource: source,
-    needsAuth:   !token && !!storeHostname,
-    authUrl:     storeHostname ? `/auth?shop=${storeHostname}` : null,
-  });
-});
-
-// ════════════════════════════════════════════════════════
 // /scan-apps-api
 // ════════════════════════════════════════════════════════
 app.get('/scan-apps-api', async (req, res) => {
-  const { storeUrl } = req.query;
+  const { storeUrl, adminToken } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
+  if (!adminToken) return res.status(400).json({ error: 'adminToken is required' });
 
   sseHeaders(res, req);
   const hb  = startHeartbeat(res);
@@ -378,23 +247,12 @@ app.get('/scan-apps-api', async (req, res) => {
   const host = extractHostname(storeUrl);
 
   try {
-    const { token, source } = await resolveToken(host);
-
-    if (!token) {
-      throw new Error(
-        `No Admin Token found.\n` +
-        `→ Set SHOPIFY_ADMIN_TOKEN in your Render environment variables.\n` +
-        `→ Create one at: https://${host}/admin/apps/private`
-      );
-    }
-
-    log(`[Apps API] Token source: ${source}`, 'info');
-    log('[Apps API] Connecting to Shopify...', 'info');
+    log('[Apps API] Connecting to Shopify with provided token...', 'info');
 
     const gqlRes = await axios({
-      url:     `https://${host}/admin/api/${LATEST_API_VERSION}/graphql.json`,
+      url:     `https://${host}/admin/api/2024-01/graphql.json`,
       method:  'POST',
-      headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
+      headers: { 'X-Shopify-Access-Token': adminToken, 'Content-Type': 'application/json' },
       data:    JSON.stringify({
         query: `{ appInstallations(first: 100) { edges { node { app { title handle developerName appStoreAppUrl } } } } }`,
       }),
@@ -405,11 +263,7 @@ app.get('/scan-apps-api', async (req, res) => {
     if (errs?.length) {
       const errMsg = errs.map(e => e.message).join('; ');
       if (errMsg.toLowerCase().includes('access') || errMsg.toLowerCase().includes('unauthorized') || errMsg.toLowerCase().includes('token')) {
-        throw new Error(
-          `Token rejected by Shopify (${errMsg}).\n` +
-          `Your token may be expired or missing read_apps scope.\n` +
-          `→ Try reinstalling the app to refresh the token.`
-        );
+        throw new Error(`Invalid Admin API Token. Please check if the token belongs to ${host} and has read_apps scope.`);
       }
       throw new Error(errMsg);
     }
@@ -465,90 +319,12 @@ app.get('/scan-apps-api', async (req, res) => {
     const is401 = error.response?.status === 401 || error.message.includes('401');
     sendSse(res, 'scanError', {
       details: is401
-        ? `❌ 401 Unauthorized.\nYour token is invalid or expired. The Shopify Partner Dashboard requires a fresh OAuth flow.`
+        ? `❌ 401 Unauthorized.\nThe Admin Token is invalid or doesn't match this store.`
         : error.message,
     });
   } finally {
     clearInterval(hb);
     sendSse(res, 'scanComplete', { message: 'Done.' });
-    res.end();
-  }
-});
-
-// ════════════════════════════════════════════════════════
-// /scan-all — Puppeteer fallback
-// ════════════════════════════════════════════════════════
-app.get('/scan-all', async (req, res) => {
-  const { storeUrl, storePassword, runPerfScan, runAppScan, device } = req.query;
-  if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
-
-  sseHeaders(res, req);
-  const hb  = startHeartbeat(res);
-  const log = (msg) => {
-    console.log(msg);
-    const type = msg.startsWith('[+]') ? 'success' : (msg.startsWith('[!]') || msg.includes('ERROR')) ? 'error' : 'info';
-    sendSse(res, 'log', { message: msg, type });
-  };
-
-  const finalUrl = normalizeUrl(storeUrl);
-  let browser, errorOccurred = false;
-
-  try {
-    log('[System] Launching browser...');
-    browser = await launchBrowser();
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setCacheEnabled(false);
-
-    log('[System] Navigating to store...');
-    await page.goto(finalUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-    await handleStorePassword(page, storePassword);
-    await handleModals(page, log);
-
-    const fingerprintMap = buildFingerprintMap();
-    let appReport  = { executiveSummary: {}, appBreakdown: [], topCulprits: [] };
-    let perfReport = { success: false, metrics: null };
-
-    if (runAppScan === 'true') {
-      log('[App] Running Puppeteer fingerprint scan...');
-      appReport = await scanStoreLogic(page, log, fingerprintMap);
-    }
-
-    if (runPerfScan === 'true') {
-      log(`[Perf] Running Lighthouse (${device || 'desktop'})...`);
-      try { if (page && !page.isClosed()) await page.close(); } catch {}
-      const isMobile = device === 'mobile';
-      const settings = isMobile
-        ? { formFactor:'mobile', screenEmulation:{mobile:true,width:360,height:640,deviceScaleFactor:2.625,disabled:false}, throttlingMethod:'simulate', throttling:{rttMs:150,throughputKbps:1638.4,cpuSlowdownMultiplier:4} }
-        : { formFactor:'desktop', screenEmulation:{mobile:false} };
-      const chromePort = new URL(browser.wsEndpoint()).port;
-      const { lhr } = await lighthouse(finalUrl, { port: chromePort, output: 'json', settings });
-      const audits = lhr.audits;
-      const metrics = {
-        lcp: audits['largest-contentful-paint']?.displayValue ?? 'N/A',
-        cls: audits['cumulative-layout-shift']?.displayValue   ?? 'N/A',
-        tbt: audits['total-blocking-time']?.displayValue       ?? 'N/A',
-        fcp: audits['first-contentful-paint']?.displayValue    ?? 'N/A',
-        speedIndex: audits['speed-index']?.displayValue        ?? 'N/A',
-        performanceScore: Math.round(lhr.categories.performance.score * 100),
-        device: device || 'desktop',
-      };
-      const categories = { performance: lhr.categories.performance, accessibility: lhr.categories.accessibility, 'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo };
-      perfReport = { success:true, metrics, categories, audits, culprits: findCulprits(audits, fingerprintMap) };
-    }
-
-    sendSse(res, 'scanResult', appReport);
-    sendSse(res, 'perfResult', perfReport);
-    log('[System] All scans finished.');
-
-  } catch (error) {
-    errorOccurred = true;
-    console.error('[scan-all]', error);
-    sendSse(res, 'scanError', { details: error.message });
-  } finally {
-    clearInterval(hb);
-    try { if (browser) await browser.close(); } catch {}
-    sendSse(res, 'scanComplete', { message: errorOccurred ? 'Done with errors' : 'Done' });
     res.end();
   }
 });
@@ -635,7 +411,7 @@ app.get('/scan-speed', async (req, res) => {
 // /scan-images
 // ════════════════════════════════════════════════════════
 app.get('/scan-images', async (req, res) => {
-  const { storeUrl, storePassword } = req.query;
+  const { storeUrl, storePassword, adminToken } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
 
   sseHeaders(res, req);
@@ -644,15 +420,14 @@ app.get('/scan-images', async (req, res) => {
 
   const finalUrl = normalizeUrl(storeUrl);
   const hostname = extractHostname(storeUrl);
-  const { token } = await resolveToken(hostname);
   let browser, errorOccurred = false;
 
   try {
     let apiProductImages = [];
-    if (token) {
+    if (adminToken) {
       log('[Images] Fetching product images via Admin API...');
       try {
-        const allProducts = await shopifyGetAllPages(`https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`, token, 'products');
+        const allProducts = await shopifyGetAllPages(`https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`, adminToken, 'products');
         for (const p of allProducts) {
           for (const img of p.images || []) {
             if (img.src) apiProductImages.push({ src: img.src, alt: img.alt || '', hasAlt: !!(img.alt || '').trim(), productTitle: p.title, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
@@ -798,16 +573,16 @@ app.get('/scan-ghost-code', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
 
-  const activeStoreUrl = req.query.storeUrl || ENV_STORE_URL;
-  if (!activeStoreUrl) { sendSse(res, 'scanError', { details: 'Store URL missing.' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
+  const { storeUrl, adminToken } = req.query;
+  if (!storeUrl || !adminToken) { 
+    sendSse(res, 'scanError', { details: 'Store URL and Admin Token are required.' }); 
+    clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); 
+  }
 
-  const host = extractHostname(activeStoreUrl);
-  const { token: activeToken } = await resolveToken(host);
+  const host = extractHostname(storeUrl);
 
   try {
-    if (!activeToken) throw new Error('Admin Token missing. Needs OAuth connection.');
-
-    const axiosInstance = axios.create({ baseURL: `https://${host}/admin/api/${LATEST_API_VERSION}`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
+    const axiosInstance = axios.create({ baseURL: `https://${host}/admin/api/2024-01`, headers: { 'X-Shopify-Access-Token': adminToken, 'Content-Type': 'application/json' }, timeout: 30000 });
 
     log('[Ghost] Fetching installed apps...');
     let installedAppNames = [], installedAppHandles = [];
@@ -1050,15 +825,7 @@ app.get('/check-password', async (req, res) => {
 // ════════════════════════════════════════════════════════
 app.get('/', async (req, res) => {
   try {
-    const shop = req.query.shop ? extractHostname(req.query.shop) : (ENV_STORE_URL ? extractHostname(ENV_STORE_URL) : '');
-
-    if (shop && !ENV_ADMIN_TOKEN) {
-      const storeData = await Store.findOne({ shop }).catch(() => null);
-      if (!storeData?.accessToken) {
-        console.log(`[Serve] No valid token for ${shop} → Redirecting to OAuth`);
-        return res.redirect(`/auth?shop=${shop}`);
-      }
-    }
+    const shop = req.query.shop ? extractHostname(req.query.shop) : '';
 
     const htmlPath = path.join(__dirname, '../frontend', 'server.html');
     let html = await fs.readFile(htmlPath, 'utf8');
