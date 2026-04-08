@@ -249,9 +249,26 @@ function runApiScan() {
       es.addEventListener('log',        e => { const d = JSON.parse(e.data); logMsg(d.message, d.type||'info'); });
       es.addEventListener('scanResult', e => { scanState.appReport = JSON.parse(e.data); logMsg('[System] ✅ App data from Admin API.', 'success'); });
       es.addEventListener('scanComplete', () => { es.close(); appDone = true; done(); });
-      es.addEventListener('scanError',    e => {
-        logMsg('[ERROR] App API: ' + JSON.parse(e.data).details, 'error');
-        scanState.hasError = true; es.close(); appDone = true; done();
+      es.addEventListener('scanError', e => {
+        const d = JSON.parse(e.data);
+        if (d.needsReauth && d.authUrl) {
+          // FIX: Show re-auth button instead of crashing
+          logMsg('[ERROR] Token expired or invalid. Need to re-authenticate.', 'error');
+          scanState.hasError = true;
+          es.close(); appDone = true;
+          // Inject re-auth prompt into the terminal
+          const authLine = document.createElement('div');
+          authLine.style.cssText = 'margin-top:12px;padding:10px 14px;background:rgba(244,63,94,.1);border:1px solid rgba(244,63,94,.25);border-radius:8px;font-size:12px;';
+          authLine.innerHTML = `<span style="color:var(--danger)">⚠️ Admin token rejected by Shopify.</span><br>
+            <a href="${d.authUrl}" style="color:var(--accent);font-family:var(--mono);font-size:11px;display:inline-block;margin-top:6px">
+              🔑 Click here to re-authenticate the app →
+            </a>`;
+          elLog.appendChild(authLine);
+          done();
+        } else {
+          logMsg('[ERROR] App API: ' + d.details, 'error');
+          scanState.hasError = true; es.close(); appDone = true; done();
+        }
       });
       es.onerror = () => { if (es.readyState !== EventSource.CLOSED) { es.close(); appDone = true; done(); } };
     }
