@@ -1,4 +1,5 @@
 import '@shopify/shopify-api/adapters/node';
+import { shopifyApi, LATEST_API_VERSION } from '@shopify/shopify-api';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,13 +14,17 @@ import mongoose from 'mongoose';
 
 dotenv.config();
 
+// ── MONGODB CONNECTION ───────────────────────────────────
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('[Server] MongoDB Connected'))
   .catch(err => console.error('[Server] DB Error:', err));
 
+// Update Schema to handle expiring tokens
 const storeSchema = new mongoose.Schema({
   shop:        { type: String, required: true, unique: true },
   accessToken: { type: String, required: true },
+  scope:       { type: String },
+  expires_in:  { type: Number },
   isActive:    { type: Boolean, default: true }
 });
 const Store = mongoose.model('Store', storeSchema);
@@ -35,7 +40,18 @@ const SHOPIFY_API_KEY    = process.env.SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
 const APP_URL            = process.env.APP_URL;
 
-// ── iframe fix ────────────────────────────────────────────
+// ── SHOPIFY API INITIALIZATION ───────────────────────────
+// This is the CRITICAL fix for the deprecated offline token error
+const shopify = shopifyApi({
+  apiKey: SHOPIFY_API_KEY,
+  apiSecretKey: SHOPIFY_API_SECRET,
+  scopes: ['read_products', 'read_apps', 'read_themes', 'read_script_tags'],
+  hostName: new URL(APP_URL).host,
+  apiVersion: LATEST_API_VERSION,
+  isEmbeddedApp: true,
+});
+
+// ── IFRAME FIX ────────────────────────────────────────────
 app.use((req, res, next) => {
   res.removeHeader('X-Frame-Options');
   res.setHeader('Content-Security-Policy', "frame-ancestors https://admin.shopify.com https://*.myshopify.com 'self';");
@@ -78,17 +94,12 @@ function extractHostname(urlOrHost) {
   catch { return s.replace(/^https?:\/\//, '').split('/')[0].toLowerCase(); }
 }
 
-// ── KEY FIX: ENV token is ALWAYS PRIMARY ─────────────────
-// Shopify deprecated "offline" OAuth tokens. The SHOPIFY_ADMIN_TOKEN
-// in .env is a custom app token that NEVER expires. Use it first.
 async function resolveToken(hostname) {
-  // 1. ENV token is PRIMARY — it's a custom app token, never expires
   if (ENV_ADMIN_TOKEN) {
     console.log(`[Token] ✅ Using ENV_ADMIN_TOKEN (primary) for ${hostname}`);
     return { token: ENV_ADMIN_TOKEN, source: 'env' };
   }
 
-  // 2. Only fall back to DB if no ENV token
   try {
     const storeData = await Store.findOne({ shop: { $regex: new RegExp(`^${hostname}$`, 'i') } });
     if (storeData?.accessToken) {
@@ -271,34 +282,56 @@ async function shopifyGetAllPages(baseUrl, token, dataKey) {
 }
 
 // ════════════════════════════════════════════════════════
-// OAUTH FLOW (kept for future use, but ENV token is primary)
+// NEW OAUTH FLOW - USING OFFICIAL SHOPIFY LIBRARY
+// Handles the deprecation of offline tokens automatically
 // ════════════════════════════════════════════════════════
-app.get('/auth', (req, res) => {
-  const shop = req.query.shop;
-  if (!shop) return res.status(400).send('Missing shop parameter');
-  const host       = extractHostname(shop);
-  const redirectUri = `${APP_URL}/auth/callback`;
-  // Use online token scopes (not offline) to avoid deprecation warning
-  const scopes     = 'read_products,read_apps,read_themes,read_script_tags';
-  const installUrl = `https://${host}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-  console.log(`[OAuth] Redirecting: ${installUrl}`);
-  res.redirect(installUrl);
+app.get('/auth', async (req, res) => {
+  try {
+    const shop = shopify.utils.sanitizeShop(req.query.shop, true);
+    if (!shop) {
+      return res.status(400).send('Invalid shop parameter');
+    }
+    console.log(`[OAuth] Starting authorization for: ${shop}`);
+    
+    await shopify.auth.begin({
+      shop,
+      callbackPath: '/auth/callback',
+      isOnline: false,
+      rawRequest: req,
+      rawResponse: res,
+    });
+  } catch (error) {
+    console.error(`[OAuth] Begin Error for ${req.query.shop}:`, error);
+    res.status(500).send('Auth begin failed');
+  }
 });
 
 app.get('/auth/callback', async (req, res) => {
-  const { shop, code } = req.query;
-  const host = extractHostname(shop);
   try {
-    const response = await axios.post(`https://${host}/admin/oauth/access_token`, {
-      client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code
+    console.log(`[OAuth] Processing callback for: ${req.query.shop}`);
+    const callbackResponse = await shopify.auth.callback({
+      rawRequest: req,
+      rawResponse: res,
     });
-    const accessToken = response.data.access_token;
-    console.log(`[OAuth] Token for ${host}: ${accessToken.slice(0, 10)}...`);
-    await Store.findOneAndUpdate({ shop: host }, { shop: host, accessToken, isActive: true }, { upsert: true, new: true });
-    console.log(`[OAuth] ✅ Token saved to DB for ${host}`);
-    res.redirect(`/?shop=${host}`);
+
+    const session = callbackResponse.session;
+
+    await Store.findOneAndUpdate(
+      { shop: session.shop },
+      { 
+        shop: session.shop, 
+        accessToken: session.accessToken, 
+        scope: session.scope,
+        expires_in: session.expires ? session.expires.getTime() : null,
+        isActive: true 
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log(`[OAuth] ✅ New format token saved to DB for ${session.shop}`);
+    res.redirect(`/?shop=${session.shop}&host=${req.query.host}`);
   } catch (error) {
-    console.error('[OAuth] Error:', error.response?.data || error.message);
+    console.error('[OAuth] Callback Error:', error.message);
     res.status(500).send(`Authentication failed: ${error.message}`);
   }
 });
@@ -332,7 +365,7 @@ app.get('/init', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
-// /scan-apps-api — FIXED: ENV token primary, clean 401 handling
+// /scan-apps-api
 // ════════════════════════════════════════════════════════
 app.get('/scan-apps-api', async (req, res) => {
   const { storeUrl } = req.query;
@@ -359,7 +392,7 @@ app.get('/scan-apps-api', async (req, res) => {
     log('[Apps API] Connecting to Shopify...', 'info');
 
     const gqlRes = await axios({
-      url:     `https://${host}/admin/api/2025-01/graphql.json`,
+      url:     `https://${host}/admin/api/${LATEST_API_VERSION}/graphql.json`,
       method:  'POST',
       headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
       data:    JSON.stringify({
@@ -368,16 +401,14 @@ app.get('/scan-apps-api', async (req, res) => {
       timeout: 30000,
     });
 
-    // Check for GraphQL-level errors
     const errs = gqlRes.data?.errors;
     if (errs?.length) {
       const errMsg = errs.map(e => e.message).join('; ');
-      // If it's an auth error, give a clear message
       if (errMsg.toLowerCase().includes('access') || errMsg.toLowerCase().includes('unauthorized') || errMsg.toLowerCase().includes('token')) {
         throw new Error(
           `Token rejected by Shopify (${errMsg}).\n` +
-          `Your SHOPIFY_ADMIN_TOKEN may be expired or missing read_apps scope.\n` +
-          `→ Go to: https://${host}/admin/apps and create a new custom app token.`
+          `Your token may be expired or missing read_apps scope.\n` +
+          `→ Try reinstalling the app to refresh the token.`
         );
       }
       throw new Error(errMsg);
@@ -431,11 +462,10 @@ app.get('/scan-apps-api', async (req, res) => {
 
   } catch (error) {
     console.error('[Apps API]', error.message);
-    // Check if it's a 401 HTTP error
     const is401 = error.response?.status === 401 || error.message.includes('401');
     sendSse(res, 'scanError', {
       details: is401
-        ? `❌ 401 Unauthorized.\nYour token is invalid or expired.\n\nFix: Go to your Shopify admin → Settings → Apps and sales channels → Develop apps → Create or regenerate your custom app token. Then update SHOPIFY_ADMIN_TOKEN in Render.`
+        ? `❌ 401 Unauthorized.\nYour token is invalid or expired. The Shopify Partner Dashboard requires a fresh OAuth flow.`
         : error.message,
     });
   } finally {
@@ -775,26 +805,26 @@ app.get('/scan-ghost-code', async (req, res) => {
   const { token: activeToken } = await resolveToken(host);
 
   try {
-    if (!activeToken) throw new Error('Admin Token missing. Set SHOPIFY_ADMIN_TOKEN in environment.');
+    if (!activeToken) throw new Error('Admin Token missing. Needs OAuth connection.');
 
-    const shopify = axios.create({ baseURL: `https://${host}/admin/api/2025-10`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
+    const axiosInstance = axios.create({ baseURL: `https://${host}/admin/api/${LATEST_API_VERSION}`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
 
     log('[Ghost] Fetching installed apps...');
     let installedAppNames = [], installedAppHandles = [];
     try {
-      const gqlRes = await axios({ url: `https://${host}/admin/api/2024-01/graphql.json`, method: 'POST', headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, data: JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }), timeout: 30000 });
+      const gqlRes = await axiosInstance({ url: '/graphql.json', method: 'POST', data: JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }) });
       const edges = gqlRes.data?.data?.appInstallations?.edges || [];
       installedAppNames   = edges.map(e => e.node.app.title.toLowerCase());
       installedAppHandles = edges.map(e => (e.node.app.handle || '').toLowerCase());
       log(`[Ghost] ${installedAppNames.length} installed apps found.`);
     } catch (err) { log(`[Ghost] Warning: ${err.message}`); }
 
-    const themeRes  = await shopify.get('/themes.json?role=main');
+    const themeRes  = await axiosInstance.get('/themes.json?role=main');
     const mainTheme = themeRes.data.themes?.[0];
     if (!mainTheme) throw new Error('No published theme found.');
     log(`[Ghost] Theme: "${mainTheme.name}"`);
 
-    const assetListRes = await shopify.get(`/themes/${mainTheme.id}/assets.json`);
+    const assetListRes = await axiosInstance.get(`/themes/${mainTheme.id}/assets.json`);
     const allAssets    = assetListRes.data.assets || [];
     const liquidFiles  = allAssets.filter(a => a.key.endsWith('.liquid'));
     log(`[Ghost] Scanning ${liquidFiles.length} liquid files...`);
@@ -805,7 +835,7 @@ app.get('/scan-ghost-code', async (req, res) => {
     for (const file of liquidFiles) {
       let content = '';
       try {
-        const fileRes = await shopify.get(`/themes/${mainTheme.id}/assets.json?asset[key]=${encodeURIComponent(file.key)}`);
+        const fileRes = await axiosInstance.get(`/themes/${mainTheme.id}/assets.json?asset[key]=${encodeURIComponent(file.key)}`);
         content = fileRes.data.asset?.value || '';
       } catch { continue; }
       if (!content) continue;
@@ -1022,11 +1052,10 @@ app.get('/', async (req, res) => {
   try {
     const shop = req.query.shop ? extractHostname(req.query.shop) : (ENV_STORE_URL ? extractHostname(ENV_STORE_URL) : '');
 
-    // Only redirect to OAuth if NO env token AND no DB token
     if (shop && !ENV_ADMIN_TOKEN) {
       const storeData = await Store.findOne({ shop }).catch(() => null);
       if (!storeData?.accessToken) {
-        console.log(`[Serve] No token for ${shop} → OAuth redirect`);
+        console.log(`[Serve] No valid token for ${shop} → Redirecting to OAuth`);
         return res.redirect(`/auth?shop=${shop}`);
       }
     }
