@@ -1,4 +1,3 @@
-import '@shopify/shopify-api/adapters/node';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -9,21 +8,41 @@ import lighthouse from 'lighthouse';
 import { URL } from 'url';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 
 dotenv.config();
+
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('[Server] MongoDB Connected'))
+  .catch(err => console.error('[Server] DB Error:', err));
+
+const storeSchema = new mongoose.Schema({
+  shop:        { type: String, required: true, unique: true },
+  accessToken: { type: String, required: true },
+  isActive:    { type: Boolean, default: true }
+});
+const Store = mongoose.model('Store', storeSchema);
 
 const app = express();
 const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-const ENV_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
-const ENV_STORE_URL   = process.env.SHOPIFY_STORE_URL;
+const ENV_ADMIN_TOKEN    = process.env.SHOPIFY_ADMIN_TOKEN;
+const ENV_STORE_URL      = process.env.SHOPIFY_STORE_URL;
+const SHOPIFY_API_KEY    = process.env.SHOPIFY_API_KEY;
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
+const APP_URL            = process.env.APP_URL;
 
-// ── IFRAME FIX ────────────────────────────────────────────
+// ── iframe embedding fix ──────────────────────────────────
 app.use((req, res, next) => {
   res.removeHeader('X-Frame-Options');
   res.setHeader('Content-Security-Policy', "frame-ancestors https://admin.shopify.com https://*.myshopify.com 'self';");
+  next();
+});
+
+// ── CORS (needed on Render) ───────────────────────────────
+app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   next();
@@ -56,11 +75,40 @@ function normalizeUrl(raw) {
   return (s.startsWith('http://') || s.startsWith('https://')) ? s : 'https://' + s;
 }
 
+// FIX: strict hostname extraction — strips port, path, etc.
 function extractHostname(urlOrHost) {
   let s = (urlOrHost || '').trim();
   if (!s.startsWith('http')) s = 'https://' + s;
   try { return new URL(s).hostname.toLowerCase().replace(/\/$/, ''); }
   catch { return s.replace(/^https?:\/\//, '').split('/')[0].toLowerCase(); }
+}
+
+// FIX: resolve token with full fallback chain
+// DB token → ENV token → null (no token)
+async function resolveToken(hostname) {
+  // Try MongoDB first
+  try {
+    const storeData = await Store.findOne({ shop: hostname });
+    if (storeData?.accessToken) {
+      console.log(`[Token] ✅ DB token found for ${hostname}`);
+      return { token: storeData.accessToken, source: 'oauth-db' };
+    }
+    // Try case-insensitive match
+    const storeDataAny = await Store.findOne({ shop: { $regex: new RegExp(`^${hostname}$`, 'i') } });
+    if (storeDataAny?.accessToken) {
+      console.log(`[Token] ✅ DB token (case-insensitive) for ${hostname}`);
+      return { token: storeDataAny.accessToken, source: 'oauth-db-ci' };
+    }
+  } catch (e) { console.log(`[Token] DB error: ${e.message}`); }
+
+  // Fallback to ENV
+  if (ENV_ADMIN_TOKEN) {
+    console.log(`[Token] Using ENV_ADMIN_TOKEN for ${hostname}`);
+    return { token: ENV_ADMIN_TOKEN, source: 'env' };
+  }
+
+  console.log(`[Token] ❌ No token for ${hostname}`);
+  return { token: null, source: 'none' };
 }
 
 function findCulprits(audits, fingerprintMap) {
@@ -78,7 +126,9 @@ function findCulprits(audits, fingerprintMap) {
       const ex = identified.find(c => c.appName === matched.name);
       ex ? (ex.duration += dur, ex.scriptCount++) :
            identified.push({ appName: matched.name, icon: matched.icon, duration: dur, scriptCount: 1 });
-    } else if (item.url) { unidentified.push({ url: item.url, duration: dur }); }
+    } else if (item.url) {
+      unidentified.push({ url: item.url, duration: dur });
+    }
   }
   identified.sort((a, b) => b.duration - a.duration);
   unidentified.sort((a, b) => b.duration - a.duration);
@@ -126,13 +176,18 @@ function buildAppPerfMap(audits, fingerprintMap) {
 function launchBrowser() {
   return puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote','--proxy-server=direct://','--proxy-bypass-list=*']
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--disable-ipv6', '--no-zygote', '--disable-software-rasterizer',
+      '--proxy-server=direct://', '--proxy-bypass-list=*'
+    ]
   });
 }
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
 
+// ── SSE HELPERS ──────────────────────────────────────────
 function startHeartbeat(res, ms = 15000) {
   const iv = setInterval(() => {
     if (res.writableEnded) { clearInterval(iv); return; }
@@ -171,11 +226,15 @@ async function handleStorePassword(page, storePassword) {
 
 async function handleModals(page, log) {
   try {
-    const btn = await page.waitForSelector('[id*="onetrust-accept-btn-handler"],[aria-label*="accept"],[class*="cookie-accept"]', { timeout: 3000 });
+    const btn = await page.waitForSelector(
+      '[id*="onetrust-accept-btn-handler"],[aria-label*="accept"],[class*="cookie-accept"]',
+      { timeout: 3000 }
+    );
     if (btn) { await btn.click(); await new Promise(r => setTimeout(r, 800)); if (log) log('[System] Modal dismissed.'); }
   } catch { if (log) log('[System] No modal. Proceeding.'); }
 }
 
+// ── CATEGORY / IMPACT HELPERS ────────────────────────────
 function inferCategoryFromApp(name, dev = '') {
   const n = (name + ' ' + dev).toLowerCase();
   if (n.match(/review|rating|yotpo|stamped|judge\.me|okendo|loox/))  return 'Reviews';
@@ -233,12 +292,88 @@ async function shopifyGetAllPages(baseUrl, token, dataKey) {
 }
 
 // ════════════════════════════════════════════════════════
-// /scan-apps-api
+// OAUTH FLOW
+// ════════════════════════════════════════════════════════
+app.get('/auth', (req, res) => {
+  const shop = req.query.shop;
+  if (!shop) return res.status(400).send('Missing shop parameter');
+  const host = extractHostname(shop);
+  const redirectUri = `${APP_URL}/auth/callback`;
+  // Include read_apps scope — CRITICAL for appInstallations GraphQL
+  const scopes = 'read_products,read_apps,read_themes,read_script_tags';
+  const installUrl = `https://${host}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  console.log(`[OAuth] Redirecting to install: ${installUrl}`);
+  res.redirect(installUrl);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const { shop, code } = req.query;
+  const host = extractHostname(shop);
+  try {
+    const response = await axios.post(`https://${host}/admin/oauth/access_token`, {
+      client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code
+    });
+    const accessToken = response.data.access_token;
+    console.log(`[OAuth] Token received for ${host}: ${accessToken.slice(0, 10)}...`);
+
+    await Store.findOneAndUpdate(
+      { shop: host },
+      { shop: host, accessToken, isActive: true },
+      { upsert: true, new: true }
+    );
+    console.log(`[OAuth] ✅ Token saved to DB for ${host}`);
+    res.redirect(`/?shop=${host}`);
+  } catch (error) {
+    console.error('[OAuth] Error:', error.response?.data || error.message);
+    res.status(500).send(`Authentication failed: ${error.message}`);
+  }
+});
+
+// ════════════════════════════════════════════════════════
+// /init — returns storeUrl + hasToken to client
+// ════════════════════════════════════════════════════════
+app.get('/init', async (req, res) => {
+  const shopParam   = req.query.shop || '';
+  let storeHostname = '';
+  let tokenSource   = 'none';
+
+  // Priority: ?shop= → ENV_STORE_URL → DB first active store
+  if (shopParam) {
+    storeHostname = extractHostname(shopParam);
+  }
+  if (!storeHostname && ENV_STORE_URL) {
+    storeHostname = extractHostname(ENV_STORE_URL);
+  }
+  if (!storeHostname) {
+    try {
+      const any = await Store.findOne({ isActive: true });
+      if (any?.shop) storeHostname = any.shop;
+    } catch {}
+  }
+
+  const { token, source } = storeHostname
+    ? await resolveToken(storeHostname)
+    : { token: ENV_ADMIN_TOKEN || null, source: ENV_ADMIN_TOKEN ? 'env' : 'none' };
+
+  tokenSource = source;
+
+  console.log(`[Init] shop="${storeHostname}" tokenSource="${tokenSource}" hasToken=${!!token}`);
+
+  res.json({
+    storeUrl:    storeHostname ? `https://${storeHostname}` : '',
+    hasToken:    !!token,
+    tokenSource,
+    needsAuth:   !token && !!storeHostname,
+    authUrl:     storeHostname ? `/auth?shop=${storeHostname}` : null,
+  });
+});
+
+// ════════════════════════════════════════════════════════
+// /scan-apps-api — FIXED: proper token fallback + 401 retry
 // ════════════════════════════════════════════════════════
 app.get('/scan-apps-api', async (req, res) => {
-  const { storeUrl, adminToken } = req.query;
+  const { storeUrl } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
-  if (!adminToken) return res.status(400).json({ error: 'adminToken is required' });
 
   sseHeaders(res, req);
   const hb  = startHeartbeat(res);
@@ -247,29 +382,80 @@ app.get('/scan-apps-api', async (req, res) => {
   const host = extractHostname(storeUrl);
 
   try {
-    log('[Apps API] Connecting to Shopify with provided token...', 'info');
+    // FIX: Use resolveToken which tries DB → ENV with proper logging
+    const { token, source } = await resolveToken(host);
 
-    const gqlRes = await axios({
-      url:     `https://${host}/admin/api/2024-01/graphql.json`,
-      method:  'POST',
-      headers: { 'X-Shopify-Access-Token': adminToken, 'Content-Type': 'application/json' },
-      data:    JSON.stringify({
-        query: `{ appInstallations(first: 100) { edges { node { app { title handle developerName appStoreAppUrl } } } } }`,
-      }),
-      timeout: 30000,
-    });
-
-    const errs = gqlRes.data?.errors;
-    if (errs?.length) {
-      const errMsg = errs.map(e => e.message).join('; ');
-      if (errMsg.toLowerCase().includes('access') || errMsg.toLowerCase().includes('unauthorized') || errMsg.toLowerCase().includes('token')) {
-        throw new Error(`Invalid Admin API Token. Please check if the token belongs to ${host} and has read_apps scope.`);
-      }
-      throw new Error(errMsg);
+    if (!token) {
+      throw new Error(
+        `No Admin Token found for ${host}.\n` +
+        `Please visit: ${APP_URL}/auth?shop=${host} to install the app.\n` +
+        `Or set SHOPIFY_ADMIN_TOKEN in your Render environment variables.`
+      );
     }
 
-    const edges = gqlRes.data?.data?.appInstallations?.edges || [];
-    log(`[Apps API] ✅ Found ${edges.length} installed apps. Enriching...`, 'success');
+    log(`[Apps API] Using token from: ${source}`, 'info');
+    log('[Apps API] Connecting to Shopify Admin API...', 'info');
+
+    let edges = [];
+    let lastError = null;
+
+    // FIX: Try token, if 401 and source was DB → retry with ENV token
+    const tokensToTry = source === 'oauth-db' || source === 'oauth-db-ci'
+      ? [token, ENV_ADMIN_TOKEN].filter(Boolean)
+      : [token];
+
+    for (const tryToken of tokensToTry) {
+      try {
+        const gqlRes = await axios({
+          url:     `https://${host}/admin/api/2025-01/graphql.json`,
+          method:  'POST',
+          headers: { 'X-Shopify-Access-Token': tryToken, 'Content-Type': 'application/json' },
+          data:    JSON.stringify({
+            query: `{ appInstallations(first: 100) { edges { node { app { title handle developerName appStoreAppUrl } } } } }`,
+          }),
+          timeout: 30000,
+        });
+
+        const errs = gqlRes.data?.errors;
+        if (errs?.length) {
+          const errMsg = errs.map(e => e.message).join('; ');
+          // If auth error and we have another token to try, continue
+          if ((errMsg.includes('Invalid API key') || errMsg.includes('access token')) && tokensToTry.indexOf(tryToken) < tokensToTry.length - 1) {
+            log(`[Apps API] Token rejected, trying fallback...`, 'warn');
+            lastError = errMsg;
+            continue;
+          }
+          throw new Error(errMsg);
+        }
+
+        edges = gqlRes.data?.data?.appInstallations?.edges || [];
+        lastError = null;
+        log(`[Apps API] ✅ Token accepted. Found ${edges.length} apps.`, 'success');
+        break;
+
+      } catch (axErr) {
+        if (axErr.response?.status === 401 && tokensToTry.indexOf(tryToken) < tokensToTry.length - 1) {
+          log(`[Apps API] 401 with DB token, trying ENV fallback...`, 'warn');
+          lastError = axErr.message;
+          continue;
+        }
+        throw axErr;
+      }
+    }
+
+    if (lastError) {
+      throw new Error(
+        `Authentication failed: ${lastError}\n` +
+        `Fix: Re-authenticate at ${APP_URL}/auth?shop=${host}\n` +
+        `Or verify SHOPIFY_ADMIN_TOKEN has read_apps scope.`
+      );
+    }
+
+    if (!edges.length) {
+      log('[Apps API] ⚠️ No apps found. Token may lack read_apps scope.', 'warn');
+    }
+
+    log(`[Apps API] Enriching ${edges.length} apps...`, 'info');
 
     const enrichedApps = edges.map(edge => {
       const shopApp   = edge.node.app;
@@ -316,15 +502,94 @@ app.get('/scan-apps-api', async (req, res) => {
 
   } catch (error) {
     console.error('[Apps API]', error.message);
-    const is401 = error.response?.status === 401 || error.message.includes('401');
+    const detail = error.message;
+    const needsReauth = detail.includes('Invalid API key') || detail.includes('access token') || detail.includes('Authentication failed');
     sendSse(res, 'scanError', {
-      details: is401
-        ? `❌ 401 Unauthorized.\nThe Admin Token is invalid or doesn't match this store.`
-        : error.message,
+      details: detail,
+      needsReauth,
+      authUrl: needsReauth ? `/auth?shop=${host}` : null,
     });
   } finally {
     clearInterval(hb);
     sendSse(res, 'scanComplete', { message: 'Done.' });
+    res.end();
+  }
+});
+
+// ════════════════════════════════════════════════════════
+// /scan-all — Puppeteer fallback
+// ════════════════════════════════════════════════════════
+app.get('/scan-all', async (req, res) => {
+  const { storeUrl, storePassword, runPerfScan, runAppScan, device } = req.query;
+  if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
+
+  sseHeaders(res, req);
+  const hb  = startHeartbeat(res);
+  const log = (msg) => {
+    console.log(msg);
+    const type = msg.startsWith('[+]') ? 'success' : (msg.startsWith('[!]') || msg.includes('ERROR')) ? 'error' : 'info';
+    sendSse(res, 'log', { message: msg, type });
+  };
+
+  const finalUrl = normalizeUrl(storeUrl);
+  let browser, errorOccurred = false;
+
+  try {
+    log('[System] Launching browser...');
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setCacheEnabled(false);
+
+    log('[System] Navigating to store...');
+    await page.goto(finalUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+    await handleStorePassword(page, storePassword);
+    await handleModals(page, log);
+
+    const fingerprintMap = buildFingerprintMap();
+    let appReport  = { executiveSummary: {}, appBreakdown: [], topCulprits: [] };
+    let perfReport = { success: false, metrics: null };
+
+    if (runAppScan === 'true') {
+      log('[App] Running Puppeteer fingerprint scan...');
+      appReport = await scanStoreLogic(page, log, fingerprintMap);
+    }
+
+    if (runPerfScan === 'true') {
+      log(`[Perf] Running Lighthouse (${device || 'desktop'})...`);
+      try { if (page && !page.isClosed()) await page.close(); } catch {}
+      const isMobile = device === 'mobile';
+      const settings = isMobile
+        ? { formFactor:'mobile', screenEmulation:{mobile:true,width:360,height:640,deviceScaleFactor:2.625,disabled:false}, throttlingMethod:'simulate', throttling:{rttMs:150,throughputKbps:1638.4,cpuSlowdownMultiplier:4} }
+        : { formFactor:'desktop', screenEmulation:{mobile:false} };
+      const chromePort = new URL(browser.wsEndpoint()).port;
+      const { lhr } = await lighthouse(finalUrl, { port: chromePort, output: 'json', settings });
+      const audits   = lhr.audits;
+      const metrics  = {
+        lcp: audits['largest-contentful-paint']?.displayValue ?? 'N/A',
+        cls: audits['cumulative-layout-shift']?.displayValue   ?? 'N/A',
+        tbt: audits['total-blocking-time']?.displayValue       ?? 'N/A',
+        fcp: audits['first-contentful-paint']?.displayValue    ?? 'N/A',
+        speedIndex: audits['speed-index']?.displayValue        ?? 'N/A',
+        performanceScore: Math.round(lhr.categories.performance.score * 100),
+        device: device || 'desktop',
+      };
+      const categories = { performance: lhr.categories.performance, accessibility: lhr.categories.accessibility, 'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo };
+      perfReport = { success:true, metrics, categories, audits, culprits: findCulprits(audits, fingerprintMap) };
+    }
+
+    sendSse(res, 'scanResult', appReport);
+    sendSse(res, 'perfResult', perfReport);
+    log('[System] All scans finished.');
+
+  } catch (error) {
+    errorOccurred = true;
+    console.error('[scan-all]', error);
+    sendSse(res, 'scanError', { details: error.message });
+  } finally {
+    clearInterval(hb);
+    try { if (browser) await browser.close(); } catch {}
+    sendSse(res, 'scanComplete', { message: errorOccurred ? 'Done with errors' : 'Done' });
     res.end();
   }
 });
@@ -387,8 +652,11 @@ app.get('/scan-speed', async (req, res) => {
     if (appPerfMap.size > 0) {
       sendSse(res, 'appPerfData', {
         apps: Array.from(appPerfMap.entries()).map(([name, data]) => ({
-          name, totalSizeKb: +data.totalSizeKb.toFixed(2), totalDurationMs: +data.totalDurationMs.toFixed(2),
-          assets: data.assets, estimatedSavingsMs: Math.round(data.totalDurationMs * 0.6),
+          name,
+          totalSizeKb:     +data.totalSizeKb.toFixed(2),
+          totalDurationMs: +data.totalDurationMs.toFixed(2),
+          assets:          data.assets,
+          estimatedSavingsMs: Math.round(data.totalDurationMs * 0.6),
         }))
       });
     }
@@ -411,7 +679,7 @@ app.get('/scan-speed', async (req, res) => {
 // /scan-images
 // ════════════════════════════════════════════════════════
 app.get('/scan-images', async (req, res) => {
-  const { storeUrl, storePassword, adminToken } = req.query;
+  const { storeUrl, storePassword } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
 
   sseHeaders(res, req);
@@ -420,21 +688,35 @@ app.get('/scan-images', async (req, res) => {
 
   const finalUrl = normalizeUrl(storeUrl);
   const hostname = extractHostname(storeUrl);
+  const { token } = await resolveToken(hostname);
   let browser, errorOccurred = false;
 
   try {
     let apiProductImages = [];
-    if (adminToken) {
-      log('[Images] Fetching product images via Admin API...');
+    if (token) {
+      log('[Images] Fetching ALL product images via Admin API...');
       try {
-        const allProducts = await shopifyGetAllPages(`https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`, adminToken, 'products');
+        const allProducts = await shopifyGetAllPages(
+          `https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`,
+          token, 'products'
+        );
         for (const p of allProducts) {
           for (const img of p.images || []) {
             if (img.src) apiProductImages.push({ src: img.src, alt: img.alt || '', hasAlt: !!(img.alt || '').trim(), productTitle: p.title, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
           }
         }
         log(`[Images] API: ${apiProductImages.length} product images from ${allProducts.length} products.`);
-      } catch (e) { log(`[Images] API failed: ${e.message}. DOM scan only.`); }
+      } catch (e) { log(`[Images] API fetch failed: ${e.message}. DOM scan only.`); }
+
+      try {
+        const cols = await shopifyGetAllPages(
+          `https://${hostname}/admin/api/2024-01/custom_collections.json?fields=id,title,image&limit=250`,
+          token, 'custom_collections'
+        );
+        for (const col of cols) {
+          if (col.image?.src) apiProductImages.push({ src: col.image.src, alt: col.image.alt || col.title || '', hasAlt: !!(col.image.alt || '').trim(), productTitle: `Collection: ${col.title}`, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
+        }
+      } catch {}
     }
 
     log('[Images] Launching browser for DOM scan...');
@@ -457,6 +739,7 @@ app.get('/scan-images', async (req, res) => {
     };
 
     attachListener();
+    log('[Images] Scanning homepage...');
     await page.goto(finalUrl, { waitUntil: 'networkidle2', timeout: 90000 });
     await handleStorePassword(page, storePassword);
     try { await page.reload({ waitUntil: 'networkidle2', timeout: 45000 }); } catch {}
@@ -474,6 +757,7 @@ app.get('/scan-images', async (req, res) => {
         return [...new Set([...all.filter(h => h.includes('/products/')).slice(0, 6), ...all.filter(h => h.includes('/collections/')).slice(0, 3)])];
       }, finalUrl);
 
+      log(`[Images] Scanning ${links.length} product/collection pages...`);
       for (const link of links) {
         try {
           attachListener();
@@ -486,18 +770,24 @@ app.get('/scan-images', async (req, res) => {
     } catch {}
 
     const allImagesMap = new Map();
-    for (const img of apiProductImages) { const key = img.src.split('?')[0]; if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img }); }
+    for (const img of apiProductImages) {
+      const key = img.src.split('?')[0];
+      if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img });
+    }
     for (const img of [...homepageImages, ...extraImages]) {
       if (!img.src) continue;
-      const key = img.src.split('?')[0];
+      const key    = img.src.split('?')[0];
       const sizeKb = +((imageSizeMap.get(img.src) || 0) / 1024).toFixed(1);
       if (allImagesMap.has(key)) {
         const ex = allImagesMap.get(key);
-        if (img.naturalWidth > 0)  ex.naturalWidth  = img.naturalWidth;
+        if (img.naturalWidth  > 0) ex.naturalWidth  = img.naturalWidth;
         if (img.naturalHeight > 0) ex.naturalHeight = img.naturalHeight;
-        if (img.displayWidth > 0)  ex.displayWidth  = img.displayWidth;
+        if (img.displayWidth  > 0) ex.displayWidth  = img.displayWidth;
         if (sizeKb > 0) ex.sizeKb = sizeKb;
-        ex.hasAlt = img.hasAlt || ex.hasAlt; ex.alt = img.alt || ex.alt; ex.loading = img.loading; ex.fromApi = false;
+        ex.hasAlt  = img.hasAlt || ex.hasAlt;
+        ex.alt     = img.alt   || ex.alt;
+        ex.loading = img.loading;
+        ex.fromApi = false;
       } else {
         allImagesMap.set(key, { src: img.src, alt: img.alt, hasAlt: img.hasAlt, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, displayWidth: img.displayWidth, sizeKb, loading: img.loading, fromApi: false, productTitle: '' });
       }
@@ -505,6 +795,7 @@ app.get('/scan-images', async (req, res) => {
 
     const needsSize = Array.from(allImagesMap.values()).filter(i => i.fromApi && i.sizeKb === 0);
     if (needsSize.length > 0) {
+      log(`[Images] Fetching sizes for ${Math.min(needsSize.length, 30)} API-only images...`);
       await Promise.allSettled(needsSize.slice(0, 30).map(async (img) => {
         try {
           const h = await axios.head(img.src, { timeout: 6000 });
@@ -573,33 +864,33 @@ app.get('/scan-ghost-code', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
 
-  const { storeUrl, adminToken } = req.query;
-  if (!storeUrl || !adminToken) { 
-    sendSse(res, 'scanError', { details: 'Store URL and Admin Token are required.' }); 
-    clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); 
-  }
+  const activeStoreUrl = req.query.storeUrl || ENV_STORE_URL;
+  if (!activeStoreUrl) { sendSse(res, 'scanError', { details: 'Store URL missing.' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
-  const host = extractHostname(storeUrl);
+  const host = extractHostname(activeStoreUrl);
+  const { token: activeToken } = await resolveToken(host);
 
   try {
-    const axiosInstance = axios.create({ baseURL: `https://${host}/admin/api/2024-01`, headers: { 'X-Shopify-Access-Token': adminToken, 'Content-Type': 'application/json' }, timeout: 30000 });
+    if (!activeToken) throw new Error('Admin Token missing. Visit /auth?shop=' + host);
+
+    const shopify = axios.create({ baseURL: `https://${host}/admin/api/2025-10`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
 
     log('[Ghost] Fetching installed apps...');
     let installedAppNames = [], installedAppHandles = [];
     try {
-      const gqlRes = await axiosInstance({ url: '/graphql.json', method: 'POST', data: JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }) });
+      const gqlRes = await axios({ url: `https://${host}/admin/api/2024-01/graphql.json`, method: 'POST', headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, data: JSON.stringify({ query: `{ appInstallations(first:50) { edges { node { app { title handle } } } } }` }), timeout: 30000 });
       const edges = gqlRes.data?.data?.appInstallations?.edges || [];
       installedAppNames   = edges.map(e => e.node.app.title.toLowerCase());
       installedAppHandles = edges.map(e => (e.node.app.handle || '').toLowerCase());
       log(`[Ghost] ${installedAppNames.length} installed apps found.`);
-    } catch (err) { log(`[Ghost] Warning: ${err.message}`); }
+    } catch (err) { log(`[Ghost] Warning: ${err.message}. Continuing...`); }
 
-    const themeRes  = await axiosInstance.get('/themes.json?role=main');
+    const themeRes  = await shopify.get('/themes.json?role=main');
     const mainTheme = themeRes.data.themes?.[0];
     if (!mainTheme) throw new Error('No published theme found.');
     log(`[Ghost] Theme: "${mainTheme.name}"`);
 
-    const assetListRes = await axiosInstance.get(`/themes/${mainTheme.id}/assets.json`);
+    const assetListRes = await shopify.get(`/themes/${mainTheme.id}/assets.json`);
     const allAssets    = assetListRes.data.assets || [];
     const liquidFiles  = allAssets.filter(a => a.key.endsWith('.liquid'));
     log(`[Ghost] Scanning ${liquidFiles.length} liquid files...`);
@@ -610,7 +901,7 @@ app.get('/scan-ghost-code', async (req, res) => {
     for (const file of liquidFiles) {
       let content = '';
       try {
-        const fileRes = await axiosInstance.get(`/themes/${mainTheme.id}/assets.json?asset[key]=${encodeURIComponent(file.key)}`);
+        const fileRes = await shopify.get(`/themes/${mainTheme.id}/assets.json?asset[key]=${encodeURIComponent(file.key)}`);
         content = fileRes.data.asset?.value || '';
       } catch { continue; }
       if (!content) continue;
@@ -688,6 +979,7 @@ app.get('/scan-fonts', async (req, res) => {
       try { Array.from(document.styleSheets).forEach(sheet => { try { Array.from(sheet.cssRules || []).forEach(rule => { if (rule.constructor.name === 'CSSFontFaceRule') { const display = rule.style.getPropertyValue('font-display'); if (!display || display === 'auto' || display === 'block') fontDisplayIssues.push({ src: rule.style.getPropertyValue('src').slice(0,100), display: display || 'not set' }); } }); } catch {} }); } catch {}
       return { fonts, fontDisplayIssues, preloadedFonts: Array.from(document.querySelectorAll('link[rel="preload"][as="font"]')).map(l => l.href) };
     });
+
     page.removeAllListeners('response');
 
     const seen = new Set();
@@ -701,7 +993,7 @@ app.get('/scan-fonts', async (req, res) => {
     if (googleFonts.length > 0) { issues.push({type:'google-fonts',severity:'warn',message:`${googleFonts.length} Google Font(s) from external CDN`}); recommendations.push('Self-host Google Fonts'); score -= 15; }
     if (fontData.fontDisplayIssues.length > 0) { issues.push({type:'no-font-display',severity:'error',message:`${fontData.fontDisplayIssues.length} font(s) missing font-display: swap`}); recommendations.push('Add font-display: swap'); score -= 20; }
     if (fontData.preloadedFonts.length === 0 && uniqueFonts.length > 0) { issues.push({type:'no-preload',severity:'warn',message:'No fonts are preloaded'}); recommendations.push('Add <link rel="preload" as="font">'); score -= 10; }
-    if (nonWoff2.length > 0) { issues.push({type:'non-woff2',severity:'warn',message:`${nonWoff2.length} font(s) not in WOFF2`}); recommendations.push('Convert to WOFF2'); score -= 10; }
+    if (nonWoff2.length > 0) { issues.push({type:'non-woff2',severity:'warn',message:`${nonWoff2.length} font(s) not in WOFF2`}); recommendations.push('Convert all fonts to WOFF2'); score -= 10; }
     if (heavyFonts.length > 0) { issues.push({type:'heavy-fonts',severity:'warn',message:`${heavyFonts.length} font file(s) over 60 KB`}); recommendations.push('Use Unicode-range subsetting'); score -= 5 * heavyFonts.length; }
     if (fontData.fonts.length > 6) { issues.push({type:'too-many-fonts',severity:'info',message:`${fontData.fonts.length} variants loaded`}); score -= 5; }
     score = Math.max(0, Math.min(100, score));
@@ -710,6 +1002,7 @@ app.get('/scan-fonts', async (req, res) => {
 
     log(`[Fonts] Done. Score: ${score}/100.`);
     sendSse(res, 'fontResult', result);
+
   } catch (error) {
     errorOccurred = true;
     console.error('[scan-fonts]', error.message);
@@ -788,12 +1081,13 @@ app.get('/scan-css', async (req, res) => {
     if (unusedPct > 30) recommendations.push('Remove unused CSS — consider PurgeCSS');
     if (domAnalysis.blocking > 2) recommendations.push('Reduce render-blocking stylesheets');
     if (totalSizeKb > 200) recommendations.push('Minify CSS files');
-    if (fileBreakdown.some(f => f.unusedPct > 70)) recommendations.push('Some files are >70% unused');
+    if (fileBreakdown.some(f => f.unusedPct > 70)) recommendations.push('Some files are >70% unused — consider removing');
 
     const result = { score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D', totalSizeKb, totalRules, unusedPct, potentialSaveKb: potentialSave, afterOptKb: +(usedBytes / 1024).toFixed(1), blockingSheets: domAnalysis.blocking, inlineStyles: domAnalysis.inlineStyles, inlineStyleSizeKb: domAnalysis.inlineStyleSizeKb, fileCount: fileBreakdown.length, files: fileBreakdown.slice(0, 20), recommendations };
 
-    log(`[CSS] Done. Score: ${score}/100.`);
+    log(`[CSS] Done. Score: ${score}/100, ${unusedPct}% unused.`);
     sendSse(res, 'cssResult', result);
+
   } catch (error) {
     errorOccurred = true;
     console.error('[scan-css]', error.message);
@@ -827,6 +1121,14 @@ app.get('/', async (req, res) => {
   try {
     const shop = req.query.shop ? extractHostname(req.query.shop) : '';
 
+    if (shop) {
+      const storeData = await Store.findOne({ shop });
+      if (!storeData?.accessToken) {
+        console.log(`[Serve] No token for ${shop} → OAuth redirect`);
+        return res.redirect(`/auth?shop=${shop}`);
+      }
+    }
+
     const htmlPath = path.join(__dirname, '../frontend', 'server.html');
     let html = await fs.readFile(htmlPath, 'utf8');
     const injected = `<script>window.__SHOPIFY_CONTEXT__={shop:"${shop}"};</script>`;
@@ -835,128 +1137,6 @@ app.get('/', async (req, res) => {
   } catch (error) {
     console.error('[Serve]', error);
     res.status(500).send('Error loading the app.');
-  }
-});
-
-
-// ══════════════════════════════════════════════════════
-// ADD THESE TWO ENDPOINTS TO YOUR server.js
-// Place them BEFORE the app.listen() call at the bottom
-// ══════════════════════════════════════════════════════
-
-// ════════════════════════════════════════════════════════
-// /init — auto-detect store URL from env (no token)
-// ════════════════════════════════════════════════════════
-app.get('/init', async (req, res) => {
-  try {
-    // Get store URL from env (set once, never changes)
-    let storeUrl = ENV_STORE_URL ? normalizeUrl(ENV_STORE_URL) : '';
-    const shopParam = req.query.shop ? normalizeUrl(req.query.shop) : '';
-    if (!storeUrl && shopParam) storeUrl = shopParam;
-
-    if (!storeUrl) {
-      return res.json({ storeUrl: '', hasToken: false, tokenSource: 'none', error: 'SHOPIFY_STORE_URL not set in environment.' });
-    }
-
-    // Normalize: ensure https and no trailing slash
-    storeUrl = storeUrl.replace(/\/$/, '');
-
-    return res.json({
-      storeUrl,
-      hasToken: false,          // Token is never stored server-side — user always enters it
-      tokenSource: 'manual',
-      message: 'Enter your Admin API token to scan this store.',
-    });
-  } catch (err) {
-    console.error('[/init]', err.message);
-    res.json({ storeUrl: '', hasToken: false, tokenSource: 'error', error: err.message });
-  }
-});
-
-// ════════════════════════════════════════════════════════
-// /verify-token — validate that the admin token actually
-//                 belongs to THIS store (URL + token match)
-// ════════════════════════════════════════════════════════
-app.get('/verify-token', async (req, res) => {
-  const { storeUrl, adminToken } = req.query;
-
-  if (!storeUrl || !adminToken) {
-    return res.json({ valid: false, error: 'storeUrl and adminToken are required.' });
-  }
-
-  const host = extractHostname(storeUrl);
-
-  try {
-    // Lightweight GraphQL call — just fetch shop name to verify the token
-    const gqlRes = await axios({
-      url:     `https://${host}/admin/api/2024-01/graphql.json`,
-      method:  'POST',
-      headers: {
-        'X-Shopify-Access-Token': adminToken,
-        'Content-Type': 'application/json',
-      },
-      data: JSON.stringify({ query: `{ shop { name myshopifyDomain } }` }),
-      timeout: 15000,
-      validateStatus: () => true,   // handle 4xx ourselves
-    });
-
-    const status = gqlRes.status;
-    const errors = gqlRes.data?.errors;
-    const shop   = gqlRes.data?.data?.shop;
-
-    // 401 / 403 = wrong token or wrong store
-    if (status === 401 || status === 403) {
-      return res.json({
-        valid: false,
-        error: `❌ Token rejected (HTTP ${status}).\nThis token does not belong to ${host}.\nPlease create a token in the Shopify Admin of this exact store.`,
-      });
-    }
-
-    // GraphQL-level access errors
-    if (errors?.length) {
-      const msg = errors.map(e => e.message).join('; ');
-      const isAuth = /access|unauthorized|permission|scope/i.test(msg);
-      return res.json({
-        valid: false,
-        error: isAuth
-          ? `❌ Token lacks required scopes.\nNeeded: read_apps, read_products.\nError: ${msg}`
-          : `❌ GraphQL error: ${msg}`,
-      });
-    }
-
-    // Mismatch: token works but points to a different store
-    if (shop?.myshopifyDomain) {
-      const tokenHost    = shop.myshopifyDomain.toLowerCase().replace(/\/$/, '');
-      const requestedHost = host.toLowerCase().replace(/\/$/, '');
-      // Compare base domains (strip .myshopify.com for custom domain support)
-      const normalize = h => h.replace(/\.myshopify\.com$/, '');
-      if (normalize(tokenHost) !== normalize(requestedHost) && tokenHost !== requestedHost) {
-        return res.json({
-          valid: false,
-          error: `❌ Token mismatch!\nToken belongs to: ${tokenHost}\nYou entered: ${requestedHost}\n\nPlease enter the token for ${requestedHost}.`,
-        });
-      }
-    }
-
-    if (!shop) {
-      return res.json({ valid: false, error: `❌ Could not read shop data. Status: ${status}` });
-    }
-
-    // ✅ Token is valid and matches this store
-    return res.json({
-      valid: true,
-      shopName: shop.name,
-      domain: shop.myshopifyDomain,
-    });
-
-  } catch (err) {
-    const is401 = err.response?.status === 401 || err.message.includes('401');
-    return res.json({
-      valid: false,
-      error: is401
-        ? `❌ 401 Unauthorized. Token is invalid or doesn't match ${host}.`
-        : `❌ Connection error: ${err.message}`,
-    });
   }
 });
 
