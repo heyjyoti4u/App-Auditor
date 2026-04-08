@@ -17,11 +17,10 @@ mongoose.connect(process.env.MONGO_URI)
   .catch(err => console.error('[Server] DB Error:', err));
 
 const storeSchema = new mongoose.Schema({
-  shop: { type: String, required: true, unique: true },
+  shop:        { type: String, required: true, unique: true },
   accessToken: { type: String, required: true },
-  isActive: { type: Boolean, default: true }
+  isActive:    { type: Boolean, default: true }
 });
-
 const Store = mongoose.model('Store', storeSchema);
 
 const app = express();
@@ -29,11 +28,25 @@ const port = process.env.PORT || 3000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-const ENV_ADMIN_TOKEN  = process.env.SHOPIFY_ADMIN_TOKEN;
-const ENV_STORE_URL    = process.env.SHOPIFY_STORE_URL;
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
+const ENV_ADMIN_TOKEN    = process.env.SHOPIFY_ADMIN_TOKEN;
+const ENV_STORE_URL      = process.env.SHOPIFY_STORE_URL;
+const SHOPIFY_API_KEY    = process.env.SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
-const APP_URL = process.env.APP_URL;
+const APP_URL            = process.env.APP_URL;
+
+// ── iframe embedding fix ──────────────────────────────────
+app.use((req, res, next) => {
+  res.removeHeader('X-Frame-Options');
+  res.setHeader('Content-Security-Policy', "frame-ancestors https://admin.shopify.com https://*.myshopify.com 'self';");
+  next();
+});
+
+// ── CORS (needed on Render) ───────────────────────────────
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
 
 // ── FINGERPRINT DB ───────────────────────────────────────
 const dbPath = path.join(__dirname, 'fingerprintDatabase.json');
@@ -45,13 +58,7 @@ let FINGERPRINT_DB = {};
   } catch (e) { console.error('[Server] Failed to load fingerprint DB:', e.message); }
 })();
 
-// FIX: Added X-Frame-Options removal so Shopify iframe isn't blocked
-app.use((req, res, next) => {
-  res.removeHeader("X-Frame-Options");
-  res.setHeader("Content-Security-Policy", "frame-ancestors https://admin.shopify.com https://*.myshopify.com;");
-  next();
-});
-
+// ── HELPERS ──────────────────────────────────────────────
 function buildFingerprintMap() {
   const map = new Map();
   for (const [appName, appData] of Object.entries(FINGERPRINT_DB)) {
@@ -68,9 +75,40 @@ function normalizeUrl(raw) {
   return (s.startsWith('http://') || s.startsWith('https://')) ? s : 'https://' + s;
 }
 
+// FIX: strict hostname extraction — strips port, path, etc.
 function extractHostname(urlOrHost) {
-  try { return new URL(normalizeUrl(urlOrHost)).hostname; }
-  catch { return urlOrHost.replace(/^https?:\/\//, '').split('/')[0]; }
+  let s = (urlOrHost || '').trim();
+  if (!s.startsWith('http')) s = 'https://' + s;
+  try { return new URL(s).hostname.toLowerCase().replace(/\/$/, ''); }
+  catch { return s.replace(/^https?:\/\//, '').split('/')[0].toLowerCase(); }
+}
+
+// FIX: resolve token with full fallback chain
+// DB token → ENV token → null (no token)
+async function resolveToken(hostname) {
+  // Try MongoDB first
+  try {
+    const storeData = await Store.findOne({ shop: hostname });
+    if (storeData?.accessToken) {
+      console.log(`[Token] ✅ DB token found for ${hostname}`);
+      return { token: storeData.accessToken, source: 'oauth-db' };
+    }
+    // Try case-insensitive match
+    const storeDataAny = await Store.findOne({ shop: { $regex: new RegExp(`^${hostname}$`, 'i') } });
+    if (storeDataAny?.accessToken) {
+      console.log(`[Token] ✅ DB token (case-insensitive) for ${hostname}`);
+      return { token: storeDataAny.accessToken, source: 'oauth-db-ci' };
+    }
+  } catch (e) { console.log(`[Token] DB error: ${e.message}`); }
+
+  // Fallback to ENV
+  if (ENV_ADMIN_TOKEN) {
+    console.log(`[Token] Using ENV_ADMIN_TOKEN for ${hostname}`);
+    return { token: ENV_ADMIN_TOKEN, source: 'env' };
+  }
+
+  console.log(`[Token] ❌ No token for ${hostname}`);
+  return { token: null, source: 'none' };
 }
 
 function findCulprits(audits, fingerprintMap) {
@@ -121,12 +159,12 @@ function buildAppPerfMap(audits, fingerprintMap) {
         if (url.includes(fp)) {
           const key = info.name;
           if (!perfMap.has(key)) perfMap.set(key, { totalSizeKb: 0, totalDurationMs: 0, assets: [] });
-          const entry = perfMap.get(key);
-          const sizeKb = +((item.transferSize || 0) / 1024).toFixed(2);
-          const durMs  = +(item.networkRequestTime || 0).toFixed(2);
-          entry.totalSizeKb     += sizeKb;
-          entry.totalDurationMs += durMs;
-          entry.assets.push({ url, type: /\.js(\?|$)/i.test(url) ? 'JS' : 'CSS', sizeKb, durationMs: durMs });
+          const e   = perfMap.get(key);
+          const skb = +((item.transferSize || 0) / 1024).toFixed(2);
+          const dms = +(item.networkRequestTime || 0).toFixed(2);
+          e.totalSizeKb     += skb;
+          e.totalDurationMs += dms;
+          e.assets.push({ url, type: /\.js(\?|$)/i.test(url) ? 'JS' : 'CSS', sizeKb: skb, durationMs: dms });
           break;
         }
       }
@@ -135,14 +173,13 @@ function buildAppPerfMap(audits, fingerprintMap) {
   return perfMap;
 }
 
-// FIX: Syntax error from previous file missing the closing bracket here
 function launchBrowser() {
   return puppeteer.launch({
-    headless: true, // Switched to boolean true format for modern puppeteer
+    headless: true,
     args: [
       '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
       '--disable-gpu', '--disable-ipv6', '--no-zygote', '--disable-software-rasterizer',
-      '--js-flags="--max-old-space-size=256"', '--proxy-server=direct://', '--proxy-bypass-list=*'
+      '--proxy-server=direct://', '--proxy-bypass-list=*'
     ]
   });
 }
@@ -150,13 +187,14 @@ function launchBrowser() {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
 
-function startHeartbeat(res, intervalMs = 15000) {
-  const interval = setInterval(() => {
-    if (res.writableEnded) { clearInterval(interval); return; }
+// ── SSE HELPERS ──────────────────────────────────────────
+function startHeartbeat(res, ms = 15000) {
+  const iv = setInterval(() => {
+    if (res.writableEnded) { clearInterval(iv); return; }
     try { res.write(': heartbeat\n\n'); if (typeof res.flush === 'function') res.flush(); }
-    catch { clearInterval(interval); }
-  }, intervalMs);
-  return interval;
+    catch { clearInterval(iv); }
+  }, ms);
+  return iv;
 }
 
 function sseHeaders(res, req) {
@@ -189,41 +227,35 @@ async function handleStorePassword(page, storePassword) {
 async function handleModals(page, log) {
   try {
     const btn = await page.waitForSelector(
-      '[id*="onetrust-accept-btn-handler"],[aria-label*="accept"],[aria-label*="Accept"],[class*="cookie-accept"],[id*="cookie-accept"]',
+      '[id*="onetrust-accept-btn-handler"],[aria-label*="accept"],[class*="cookie-accept"]',
       { timeout: 3000 }
     );
-    if (btn) { await btn.click(); await new Promise(r => setTimeout(r, 1000)); if (log) log('[System] Modal dismissed.'); }
-  } catch { if (log) log('[System] No modal found. Proceeding.'); }
+    if (btn) { await btn.click(); await new Promise(r => setTimeout(r, 800)); if (log) log('[System] Modal dismissed.'); }
+  } catch { if (log) log('[System] No modal. Proceeding.'); }
 }
 
-function inferCategoryFromApp(name, developer = '') {
-  const n = (name + ' ' + developer).toLowerCase();
+// ── CATEGORY / IMPACT HELPERS ────────────────────────────
+function inferCategoryFromApp(name, dev = '') {
+  const n = (name + ' ' + dev).toLowerCase();
   if (n.match(/review|rating|yotpo|stamped|judge\.me|okendo|loox/))  return 'Reviews';
-  if (n.match(/email|klaviyo|mailchimp|omnisend|drip|sms|attentive/)) return 'Email & Marketing';
-  if (n.match(/analytic|pixel|hotjar|segment|tracking|lucky orange/)) return 'Analytics';
-  if (n.match(/chat|support|helpdesk|gorgias|zendesk|reamaze|tidio/)) return 'Customer Service';
-  if (n.match(/upsell|cross.sell|bundle|frequently bought|zipify/))    return 'Upsell & Cross-sell';
-  if (n.match(/page builder|pagefly|gempages|shogun|layout/))          return 'Page Builder';
-  if (n.match(/subscri|recharge|bold sub|appstle|recurring/))          return 'Subscriptions';
-  if (n.match(/loyal|reward|points|referral|smile\.io|growave/))       return 'Loyalty & Rewards';
-  if (n.match(/shipping|fulfil|shipstation|easyship|delivery/))        return 'Shipping & Fulfillment';
-  if (n.match(/payment|checkout|klarna|afterpay|sezzle/))              return 'Payments';
-  if (n.match(/seo|image optim|compress|alt text|schema/))             return 'SEO & Image Optimization';
-  if (n.match(/pop.?up|popup|notification|announcement|privy/))        return 'Pop-ups & Notifications';
-  if (n.match(/inventory|stock|back in stock/))                         return 'Inventory & Alerts';
-  if (n.match(/return|exchange|refund|loop/))                           return 'Returns & Exchanges';
-  if (n.match(/social|instagram|facebook|tiktok|feed/))                return 'Social Media';
-  if (n.match(/translat|langify|weglot|language/))                     return 'Translation';
-  if (n.match(/b2b|wholesale|trade/))                                   return 'B2B & Wholesale';
-  if (n.match(/dropship|oberlo|dsers/))                                 return 'Dropshipping';
-  if (n.match(/trust|badge|security/))                                  return 'Trust & Security';
-  if (n.match(/option|variant|customiz/))                               return 'Product Options';
-  if (n.match(/digital|download|ebook/))                                return 'Digital Products';
-  if (n.match(/booking|appointment|calendar/))                          return 'Services & Bookings';
-  if (n.match(/navigation|menu|filter|search/))                         return 'Navigation & UI';
-  if (n.match(/mobile|app builder|tapcart/))                            return 'Mobile';
-  if (n.match(/compliance|gdpr|cookie|privacy/))                        return 'Compliance';
-  if (n.match(/accessib|wcag/))                                          return 'Accessibility';
+  if (n.match(/email|klaviyo|mailchimp|omnisend|sms|attentive/))      return 'Email & Marketing';
+  if (n.match(/analytic|pixel|hotjar|segment|tracking/))              return 'Analytics';
+  if (n.match(/chat|support|helpdesk|gorgias|zendesk|tidio/))         return 'Customer Service';
+  if (n.match(/upsell|cross.sell|bundle|zipify|reconvert/))           return 'Upsell & Cross-sell';
+  if (n.match(/page builder|pagefly|gempages|shogun/))                return 'Page Builder';
+  if (n.match(/subscri|recharge|appstle|recurring/))                  return 'Subscriptions';
+  if (n.match(/loyal|reward|points|referral|smile\.io/))              return 'Loyalty & Rewards';
+  if (n.match(/shipping|fulfil|shipstation|easyship/))                return 'Shipping & Fulfillment';
+  if (n.match(/payment|checkout|klarna|afterpay/))                    return 'Payments';
+  if (n.match(/seo|image optim|compress|alt text/))                   return 'SEO & Image Optimization';
+  if (n.match(/pop.?up|popup|notification|privy/))                    return 'Pop-ups & Notifications';
+  if (n.match(/inventory|stock|back in stock/))                       return 'Inventory & Alerts';
+  if (n.match(/return|exchange|refund/))                              return 'Returns & Exchanges';
+  if (n.match(/social|instagram|facebook|tiktok/))                    return 'Social Media';
+  if (n.match(/translat|langify|weglot/))                             return 'Translation';
+  if (n.match(/trust|badge|security/))                                return 'Trust & Security';
+  if (n.match(/option|variant|customiz/))                             return 'Product Options';
+  if (n.match(/compliance|gdpr|cookie|privacy/))                      return 'Compliance';
   return 'Utilities';
 }
 
@@ -235,14 +267,14 @@ function getImpactForCategory(cat) {
 
 function getDefaultRecommendation(cat) {
   const recs = {
-    'Analytics':           'Load analytics scripts asynchronously to avoid render blocking.',
-    'Email & Marketing':   'Email/marketing widgets add significant script weight — load lazily.',
-    'Reviews':             'Lazy-load review widgets below the fold to improve LCP.',
-    'Customer Service':    'Defer chat widgets until after page load to reduce TBT.',
-    'Page Builder':        'Page builder apps inject heavy CSS/JS — audit unused styles regularly.',
-    'Subscriptions':       'Subscription widgets can slow checkout — test performance carefully.',
-    'Upsell & Cross-sell': 'Ensure upsell scripts fire only after the page is interactive.',
-    'Pop-ups & Notifications': 'Defer pop-up scripts by 3–5 seconds to avoid TBT impact.',
+    'Analytics':               'Load analytics asynchronously to avoid render blocking.',
+    'Email & Marketing':       'Marketing widgets add script weight — load lazily.',
+    'Reviews':                 'Lazy-load review widgets below the fold.',
+    'Customer Service':        'Defer chat widgets until after page load.',
+    'Page Builder':            'Page builder apps inject heavy CSS/JS — audit regularly.',
+    'Subscriptions':           'Subscription widgets can slow checkout — test carefully.',
+    'Upsell & Cross-sell':     'Ensure upsell scripts fire only after page is interactive.',
+    'Pop-ups & Notifications': 'Defer pop-up scripts by 3–5 seconds.',
   };
   return recs[cat] || "Monitor this app's impact and remove if no longer needed.";
 }
@@ -252,152 +284,178 @@ async function shopifyGetAllPages(baseUrl, token, dataKey) {
   let nextUrl = baseUrl;
   while (nextUrl) {
     const res = await axios.get(nextUrl, { headers: { 'X-Shopify-Access-Token': token }, timeout: 30000 });
-    const items = res.data?.[dataKey] || [];
-    all.push(...items);
-    const linkHeader = res.headers['link'] || '';
-    const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+    all.push(...(res.data?.[dataKey] || []));
+    const match = (res.headers['link'] || '').match(/<([^>]+)>;\s*rel="next"/);
     nextUrl = match ? match[1] : null;
   }
   return all;
 }
 
-// ── SHOPIFY OAUTH FLOW ───────────────────────────────────
+// ════════════════════════════════════════════════════════
+// OAUTH FLOW
+// ════════════════════════════════════════════════════════
 app.get('/auth', (req, res) => {
   const shop = req.query.shop;
   if (!shop) return res.status(400).send('Missing shop parameter');
+  const host = extractHostname(shop);
   const redirectUri = `${APP_URL}/auth/callback`;
-  const installUrl = `https://${shop}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}&scope=read_products,read_apps,read_themes&redirect_uri=${redirectUri}`;
+  // Include read_apps scope — CRITICAL for appInstallations GraphQL
+  const scopes = 'read_products,read_apps,read_themes,read_script_tags';
+  const installUrl = `https://${host}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  console.log(`[OAuth] Redirecting to install: ${installUrl}`);
   res.redirect(installUrl);
 });
 
 app.get('/auth/callback', async (req, res) => {
   const { shop, code } = req.query;
+  const host = extractHostname(shop);
   try {
-    const response = await axios.post(`https://${shop}/admin/oauth/access_token`, {
-      client_id: SHOPIFY_API_KEY,
-      client_secret: SHOPIFY_API_SECRET,
-      code
+    const response = await axios.post(`https://${host}/admin/oauth/access_token`, {
+      client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code
     });
     const accessToken = response.data.access_token;
+    console.log(`[OAuth] Token received for ${host}: ${accessToken.slice(0, 10)}...`);
+
     await Store.findOneAndUpdate(
-      { shop: shop },
-      { shop: shop, accessToken: accessToken, isActive: true },
+      { shop: host },
+      { shop: host, accessToken, isActive: true },
       { upsert: true, new: true }
     );
-    res.redirect(`/?shop=${shop}`);
+    console.log(`[OAuth] ✅ Token saved to DB for ${host}`);
+    res.redirect(`/?shop=${host}`);
   } catch (error) {
-    console.error('[OAuth] Error:', error.message);
-    res.status(500).send('Authentication failed');
+    console.error('[OAuth] Error:', error.response?.data || error.message);
+    res.status(500).send(`Authentication failed: ${error.message}`);
   }
 });
 
 // ════════════════════════════════════════════════════════
-// /init  — REPLACE THIS ENTIRE BLOCK IN YOUR server.js
-// Returns storeUrl + hasToken from MongoDB OAuth / ENV
-// Added: tokenSource field + console.log for debugging
+// /init — returns storeUrl + hasToken to client
 // ════════════════════════════════════════════════════════
 app.get('/init', async (req, res) => {
-  const shopParam = req.query.shop || '';
+  const shopParam   = req.query.shop || '';
   let storeHostname = '';
-  let hasToken      = false;
   let tokenSource   = 'none';
 
-  // Priority: ?shop= param → ENV_STORE_URL → MongoDB first active store
+  // Priority: ?shop= → ENV_STORE_URL → DB first active store
   if (shopParam) {
-    try { storeHostname = new URL(normalizeUrl(shopParam)).hostname; }
-    catch { storeHostname = shopParam.replace(/^https?:\/\//, '').split('/')[0]; }
+    storeHostname = extractHostname(shopParam);
   }
   if (!storeHostname && ENV_STORE_URL) {
-    try { storeHostname = new URL(normalizeUrl(ENV_STORE_URL)).hostname; }
-    catch { storeHostname = ENV_STORE_URL; }
+    storeHostname = extractHostname(ENV_STORE_URL);
   }
   if (!storeHostname) {
     try {
-      const anyStore = await Store.findOne({ isActive: true });
-      if (anyStore?.shop) { storeHostname = anyStore.shop; tokenSource = 'db-fallback'; }
+      const any = await Store.findOne({ isActive: true });
+      if (any?.shop) storeHostname = any.shop;
     } catch {}
   }
 
-  if (storeHostname) {
-    // ── Try MongoDB OAuth token first (most reliable) ──
-    try {
-      const storeData = await Store.findOne({ shop: storeHostname });
-      if (storeData?.accessToken) {
-        hasToken    = true;
-        tokenSource = 'oauth-db';
-        console.log(`[Init] ✅ OAuth token found in DB for: ${storeHostname}`);
-      } else {
-        console.log(`[Init] ⚠️  DB record ${storeData ? 'exists but no token' : 'not found'} for: ${storeHostname}`);
-      }
-    } catch (dbErr) {
-      console.log(`[Init] ⚠️  DB query failed: ${dbErr.message}`);
-    }
+  const { token, source } = storeHostname
+    ? await resolveToken(storeHostname)
+    : { token: ENV_ADMIN_TOKEN || null, source: ENV_ADMIN_TOKEN ? 'env' : 'none' };
 
-    // ── Fall back to ENV token if DB has nothing ──
-    if (!hasToken && ENV_ADMIN_TOKEN) {
-      hasToken    = true;
-      tokenSource = 'env';
-      console.log(`[Init] ✅ Using ENV_ADMIN_TOKEN for: ${storeHostname}`);
-    }
-  } else if (ENV_ADMIN_TOKEN) {
-    hasToken    = true;
-    tokenSource = 'env-no-store';
-  }
+  tokenSource = source;
 
-  if (!hasToken) {
-    console.log(`[Init] ❌ No token. shopParam="${shopParam}" hostname="${storeHostname}" ENV_TOKEN=${!!ENV_ADMIN_TOKEN} MONGO=${!!process.env.MONGO_URI}`);
-  }
+  console.log(`[Init] shop="${storeHostname}" tokenSource="${tokenSource}" hasToken=${!!token}`);
 
   res.json({
     storeUrl:    storeHostname ? `https://${storeHostname}` : '',
-    hasToken,
-    tokenSource, // shown in browser console — helps diagnose issues
+    hasToken:    !!token,
+    tokenSource,
+    needsAuth:   !token && !!storeHostname,
+    authUrl:     storeHostname ? `/auth?shop=${storeHostname}` : null,
   });
 });
 
 // ════════════════════════════════════════════════════════
-// /scan-apps-api — Admin API app list
+// /scan-apps-api — FIXED: proper token fallback + 401 retry
 // ════════════════════════════════════════════════════════
 app.get('/scan-apps-api', async (req, res) => {
   const { storeUrl } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
 
-  const host = extractHostname(storeUrl);
-  
-  // FIX: Pull Token from Database
-  const storeData = await Store.findOne({ shop: host });
-  const token = (storeData && storeData.accessToken) ? storeData.accessToken : (req.query.adminToken || ENV_ADMIN_TOKEN);
-
   sseHeaders(res, req);
   const hb  = startHeartbeat(res);
   const log = (msg, type = 'info') => { console.log(msg); sendSse(res, 'log', { message: msg, type }); };
 
-  try {
-    if (!token) throw new Error('App is not installed properly. Token missing.');
+  const host = extractHostname(storeUrl);
 
+  try {
+    // FIX: Use resolveToken which tries DB → ENV with proper logging
+    const { token, source } = await resolveToken(host);
+
+    if (!token) {
+      throw new Error(
+        `No Admin Token found for ${host}.\n` +
+        `Please visit: ${APP_URL}/auth?shop=${host} to install the app.\n` +
+        `Or set SHOPIFY_ADMIN_TOKEN in your Render environment variables.`
+      );
+    }
+
+    log(`[Apps API] Using token from: ${source}`, 'info');
     log('[Apps API] Connecting to Shopify Admin API...', 'info');
 
-    const gqlRes = await axios({
-      url:     `https://${host}/admin/api/2025-01/graphql.json`,
-      method:  'POST',
-      headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' },
-      data:    JSON.stringify({
-        query: `{
-          appInstallations(first: 100) {
-            edges { node { app { title handle developerName description appStoreAppUrl } } }
+    let edges = [];
+    let lastError = null;
+
+    // FIX: Try token, if 401 and source was DB → retry with ENV token
+    const tokensToTry = source === 'oauth-db' || source === 'oauth-db-ci'
+      ? [token, ENV_ADMIN_TOKEN].filter(Boolean)
+      : [token];
+
+    for (const tryToken of tokensToTry) {
+      try {
+        const gqlRes = await axios({
+          url:     `https://${host}/admin/api/2025-01/graphql.json`,
+          method:  'POST',
+          headers: { 'X-Shopify-Access-Token': tryToken, 'Content-Type': 'application/json' },
+          data:    JSON.stringify({
+            query: `{ appInstallations(first: 100) { edges { node { app { title handle developerName appStoreAppUrl } } } } }`,
+          }),
+          timeout: 30000,
+        });
+
+        const errs = gqlRes.data?.errors;
+        if (errs?.length) {
+          const errMsg = errs.map(e => e.message).join('; ');
+          // If auth error and we have another token to try, continue
+          if ((errMsg.includes('Invalid API key') || errMsg.includes('access token')) && tokensToTry.indexOf(tryToken) < tokensToTry.length - 1) {
+            log(`[Apps API] Token rejected, trying fallback...`, 'warn');
+            lastError = errMsg;
+            continue;
           }
-        }`,
-      }),
-      timeout: 30000,
-    });
+          throw new Error(errMsg);
+        }
 
-    const errs = gqlRes.data?.errors;
-    if (errs?.length) throw new Error(errs.map(e => e.message).join('; '));
+        edges = gqlRes.data?.data?.appInstallations?.edges || [];
+        lastError = null;
+        log(`[Apps API] ✅ Token accepted. Found ${edges.length} apps.`, 'success');
+        break;
 
-    const edges = gqlRes.data?.data?.appInstallations?.edges || [];
-    if (!edges.length) throw new Error('No app installations found. Ensure token has read_apps scope.');
+      } catch (axErr) {
+        if (axErr.response?.status === 401 && tokensToTry.indexOf(tryToken) < tokensToTry.length - 1) {
+          log(`[Apps API] 401 with DB token, trying ENV fallback...`, 'warn');
+          lastError = axErr.message;
+          continue;
+        }
+        throw axErr;
+      }
+    }
 
-    log(`[Apps API] Found ${edges.length} installed apps. Enriching...`, 'success');
+    if (lastError) {
+      throw new Error(
+        `Authentication failed: ${lastError}\n` +
+        `Fix: Re-authenticate at ${APP_URL}/auth?shop=${host}\n` +
+        `Or verify SHOPIFY_ADMIN_TOKEN has read_apps scope.`
+      );
+    }
+
+    if (!edges.length) {
+      log('[Apps API] ⚠️ No apps found. Token may lack read_apps scope.', 'warn');
+    }
+
+    log(`[Apps API] Enriching ${edges.length} apps...`, 'info');
 
     const enrichedApps = edges.map(edge => {
       const shopApp   = edge.node.app;
@@ -433,8 +491,8 @@ app.get('/scan-apps-api', async (req, res) => {
     const appReport  = {
       storeUrl: `https://${host}`,
       executiveSummary: { totalAppsDetected: enrichedApps.length, totalAppSizeMb: 0, totalRequests: 0, highImpactApps: highImpact, source: 'shopify_admin_api' },
-      topCulprits: enrichedApps.filter(a => a.impact === 'High').slice(0, 5),
-      appBreakdown: enrichedApps,
+      topCulprits:         enrichedApps.filter(a => a.impact === 'High').slice(0, 5),
+      appBreakdown:        enrichedApps,
       unidentifiedDomains: [], heavyHitters: [],
       source: 'shopify_admin_api',
     };
@@ -443,11 +501,17 @@ app.get('/scan-apps-api', async (req, res) => {
     sendSse(res, 'scanResult', appReport);
 
   } catch (error) {
-    console.error('[Apps API]', error.response?.data || error.message);
-    sendSse(res, 'scanError', { details: error.response?.data ? JSON.stringify(error.response.data.errors) : error.message });
+    console.error('[Apps API]', error.message);
+    const detail = error.message;
+    const needsReauth = detail.includes('Invalid API key') || detail.includes('access token') || detail.includes('Authentication failed');
+    sendSse(res, 'scanError', {
+      details: detail,
+      needsReauth,
+      authUrl: needsReauth ? `/auth?shop=${host}` : null,
+    });
   } finally {
     clearInterval(hb);
-    sendSse(res, 'scanComplete', { message: 'API app scan complete.' });
+    sendSse(res, 'scanComplete', { message: 'Done.' });
     res.end();
   }
 });
@@ -461,12 +525,10 @@ app.get('/scan-all', async (req, res) => {
 
   sseHeaders(res, req);
   const hb  = startHeartbeat(res);
-  const log = (message) => {
-    console.log(message);
-    let type = 'info';
-    if (message.startsWith('[+]')) type = 'success';
-    if (message.startsWith('[!]') || message.includes('ERROR')) type = 'error';
-    sendSse(res, 'log', { message, type });
+  const log = (msg) => {
+    console.log(msg);
+    const type = msg.startsWith('[+]') ? 'success' : (msg.startsWith('[!]') || msg.includes('ERROR')) ? 'error' : 'info';
+    sendSse(res, 'log', { message: msg, type });
   };
 
   const finalUrl = normalizeUrl(storeUrl);
@@ -486,46 +548,34 @@ app.get('/scan-all', async (req, res) => {
 
     const fingerprintMap = buildFingerprintMap();
     let appReport  = { executiveSummary: {}, appBreakdown: [], topCulprits: [] };
-    let perfReport = { success: false, metrics: null, categories: null, audits: null, culprits: null };
+    let perfReport = { success: false, metrics: null };
 
     if (runAppScan === 'true') {
-      log('[App] Running puppeteer fingerprint scan...');
+      log('[App] Running Puppeteer fingerprint scan...');
       appReport = await scanStoreLogic(page, log, fingerprintMap);
     }
 
     if (runPerfScan === 'true') {
       log(`[Perf] Running Lighthouse (${device || 'desktop'})...`);
-      
-      try {
-        if (page && !page.isClosed()) {
-          await page.close(); 
-        }
-      } catch (e) {}
-
+      try { if (page && !page.isClosed()) await page.close(); } catch {}
       const isMobile = device === 'mobile';
       const settings = isMobile
         ? { formFactor:'mobile', screenEmulation:{mobile:true,width:360,height:640,deviceScaleFactor:2.625,disabled:false}, throttlingMethod:'simulate', throttling:{rttMs:150,throughputKbps:1638.4,cpuSlowdownMultiplier:4} }
         : { formFactor:'desktop', screenEmulation:{mobile:false} };
-
       const chromePort = new URL(browser.wsEndpoint()).port;
       const { lhr } = await lighthouse(finalUrl, { port: chromePort, output: 'json', settings });
-      const audits = lhr.audits;
-      const metrics = {
-        lcp: audits['largest-contentful-paint']?.displayValue  ?? 'N/A',
-        cls: audits['cumulative-layout-shift']?.displayValue    ?? 'N/A',
-        tbt: audits['total-blocking-time']?.displayValue        ?? 'N/A',
-        fcp: audits['first-contentful-paint']?.displayValue     ?? 'N/A',
-        speedIndex: audits['speed-index']?.displayValue         ?? 'N/A',
-        inp: audits['interaction-to-next-paint']?.displayValue  ?? 'N/A',
+      const audits   = lhr.audits;
+      const metrics  = {
+        lcp: audits['largest-contentful-paint']?.displayValue ?? 'N/A',
+        cls: audits['cumulative-layout-shift']?.displayValue   ?? 'N/A',
+        tbt: audits['total-blocking-time']?.displayValue       ?? 'N/A',
+        fcp: audits['first-contentful-paint']?.displayValue    ?? 'N/A',
+        speedIndex: audits['speed-index']?.displayValue        ?? 'N/A',
         performanceScore: Math.round(lhr.categories.performance.score * 100),
         device: device || 'desktop',
       };
-      const categories = {
-        performance: lhr.categories.performance, accessibility: lhr.categories.accessibility,
-        'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo,
-      };
+      const categories = { performance: lhr.categories.performance, accessibility: lhr.categories.accessibility, 'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo };
       perfReport = { success:true, metrics, categories, audits, culprits: findCulprits(audits, fingerprintMap) };
-      if (appReport?.executiveSummary) appReport.executiveSummary.performanceScore = metrics.performanceScore;
     }
 
     sendSse(res, 'scanResult', appReport);
@@ -555,9 +605,7 @@ app.get('/scan-speed', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => {
     console.log(msg);
-    let type = 'info';
-    if (msg.startsWith('[+]')) type = 'success';
-    if (msg.startsWith('[!]') || msg.includes('ERROR')) type = 'error';
+    const type = msg.startsWith('[+]') ? 'success' : (msg.startsWith('[!]') || msg.includes('ERROR')) ? 'error' : 'info';
     sendSse(res, 'log', { message: msg, type });
   };
 
@@ -575,8 +623,8 @@ app.get('/scan-speed', async (req, res) => {
     await page.goto(finalUrl, { waitUntil: 'networkidle2', timeout: 90000 });
     await handleStorePassword(page, storePassword);
 
-    log(`[Speed] Running Lighthouse (${device || 'desktop'})...`);
     const isMobile = device === 'mobile';
+    log(`[Speed] Running Lighthouse (${device || 'desktop'})...`);
     const settings = isMobile
       ? { formFactor:'mobile', screenEmulation:{mobile:true,width:360,height:640,deviceScaleFactor:2.625,disabled:false}, throttlingMethod:'simulate', throttling:{rttMs:150,throughputKbps:1638.4,cpuSlowdownMultiplier:4} }
       : { formFactor:'desktop', screenEmulation:{mobile:false} };
@@ -585,35 +633,32 @@ app.get('/scan-speed', async (req, res) => {
     const chromePort = new URL(browser.wsEndpoint()).port;
     const { lhr } = await lighthouse(page.url(), { port: chromePort, output: 'json', settings });
     const audits = lhr.audits;
-
     const metrics = {
-      lcp: audits['largest-contentful-paint']?.displayValue  ?? 'N/A',
-      cls: audits['cumulative-layout-shift']?.displayValue    ?? 'N/A',
-      tbt: audits['total-blocking-time']?.displayValue        ?? 'N/A',
-      fcp: audits['first-contentful-paint']?.displayValue     ?? 'N/A',
-      speedIndex: audits['speed-index']?.displayValue         ?? 'N/A',
-      inp: audits['interaction-to-next-paint']?.displayValue  ?? 'N/A',
+      lcp: audits['largest-contentful-paint']?.displayValue ?? 'N/A',
+      cls: audits['cumulative-layout-shift']?.displayValue   ?? 'N/A',
+      tbt: audits['total-blocking-time']?.displayValue       ?? 'N/A',
+      fcp: audits['first-contentful-paint']?.displayValue    ?? 'N/A',
+      speedIndex: audits['speed-index']?.displayValue        ?? 'N/A',
+      inp: audits['interaction-to-next-paint']?.displayValue ?? 'N/A',
       performanceScore: Math.round(lhr.categories.performance.score * 100),
       device: device || 'desktop',
     };
-    const categories = {
-      performance: lhr.categories.performance, accessibility: lhr.categories.accessibility,
-      'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo,
-    };
+    const categories = { performance: lhr.categories.performance, accessibility: lhr.categories.accessibility, 'best-practices': lhr.categories['best-practices'], seo: lhr.categories.seo };
     const perfReport = { success:true, metrics, categories, audits, culprits: findCulprits(audits, fingerprintMap) };
 
-    const appPerfMap = buildAppPerfMap(audits, fingerprintMap);
     sendSse(res, 'speedResult', perfReport);
 
+    const appPerfMap = buildAppPerfMap(audits, fingerprintMap);
     if (appPerfMap.size > 0) {
-      const arr = Array.from(appPerfMap.entries()).map(([name, data]) => ({
-        name,
-        totalSizeKb:        +data.totalSizeKb.toFixed(2),
-        totalDurationMs:    +data.totalDurationMs.toFixed(2),
-        assets:             data.assets,
-        estimatedSavingsMs: Math.round(data.totalDurationMs * 0.6),
-      }));
-      sendSse(res, 'appPerfData', { apps: arr });
+      sendSse(res, 'appPerfData', {
+        apps: Array.from(appPerfMap.entries()).map(([name, data]) => ({
+          name,
+          totalSizeKb:     +data.totalSizeKb.toFixed(2),
+          totalDurationMs: +data.totalDurationMs.toFixed(2),
+          assets:          data.assets,
+          estimatedSavingsMs: Math.round(data.totalDurationMs * 0.6),
+        }))
+      });
     }
 
     log(`[+] Lighthouse done. Score: ${metrics.performanceScore}`);
@@ -636,16 +681,14 @@ app.get('/scan-speed', async (req, res) => {
 app.get('/scan-images', async (req, res) => {
   const { storeUrl, storePassword } = req.query;
   if (!storeUrl) return res.status(400).json({ error: 'storeUrl is required' });
-  
-  const hostname = extractHostname(storeUrl);
-  const storeData = await Store.findOne({ shop: hostname });
-  const token = (storeData && storeData.accessToken) ? storeData.accessToken : (req.query.adminToken || ENV_ADMIN_TOKEN);
 
   sseHeaders(res, req);
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
 
   const finalUrl = normalizeUrl(storeUrl);
+  const hostname = extractHostname(storeUrl);
+  const { token } = await resolveToken(hostname);
   let browser, errorOccurred = false;
 
   try {
@@ -657,23 +700,22 @@ app.get('/scan-images', async (req, res) => {
           `https://${hostname}/admin/api/2024-01/products.json?fields=id,title,images&limit=250`,
           token, 'products'
         );
-        for (const product of allProducts) {
-          for (const img of product.images || []) {
-            if (img.src) apiProductImages.push({ src: img.src, alt: img.alt || '', hasAlt: !!(img.alt || '').trim(), productId: product.id, productTitle: product.title, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
+        for (const p of allProducts) {
+          for (const img of p.images || []) {
+            if (img.src) apiProductImages.push({ src: img.src, alt: img.alt || '', hasAlt: !!(img.alt || '').trim(), productTitle: p.title, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
           }
         }
         log(`[Images] API: ${apiProductImages.length} product images from ${allProducts.length} products.`);
-      } catch (apiErr) { log(`[Images] API fetch failed: ${apiErr.message}. DOM scan only.`); }
+      } catch (e) { log(`[Images] API fetch failed: ${e.message}. DOM scan only.`); }
 
       try {
-        const allCollections = await shopifyGetAllPages(
+        const cols = await shopifyGetAllPages(
           `https://${hostname}/admin/api/2024-01/custom_collections.json?fields=id,title,image&limit=250`,
           token, 'custom_collections'
         );
-        for (const col of allCollections) {
+        for (const col of cols) {
           if (col.image?.src) apiProductImages.push({ src: col.image.src, alt: col.image.alt || col.title || '', hasAlt: !!(col.image.alt || '').trim(), productTitle: `Collection: ${col.title}`, fromApi: true, naturalWidth: 0, naturalHeight: 0, displayWidth: 0, sizeKb: 0 });
         }
-        log(`[Images] API: ${allCollections.length} collections scanned.`);
       } catch {}
     }
 
@@ -715,6 +757,7 @@ app.get('/scan-images', async (req, res) => {
         return [...new Set([...all.filter(h => h.includes('/products/')).slice(0, 6), ...all.filter(h => h.includes('/collections/')).slice(0, 3)])];
       }, finalUrl);
 
+      log(`[Images] Scanning ${links.length} product/collection pages...`);
       for (const link of links) {
         try {
           attachListener();
@@ -727,30 +770,37 @@ app.get('/scan-images', async (req, res) => {
     } catch {}
 
     const allImagesMap = new Map();
-    for (const img of apiProductImages) { const key = img.src.split('?')[0]; if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img }); }
+    for (const img of apiProductImages) {
+      const key = img.src.split('?')[0];
+      if (!allImagesMap.has(key)) allImagesMap.set(key, { ...img });
+    }
     for (const img of [...homepageImages, ...extraImages]) {
       if (!img.src) continue;
-      const key = img.src.split('?')[0];
+      const key    = img.src.split('?')[0];
       const sizeKb = +((imageSizeMap.get(img.src) || 0) / 1024).toFixed(1);
       if (allImagesMap.has(key)) {
         const ex = allImagesMap.get(key);
-        if (img.naturalWidth > 0) ex.naturalWidth = img.naturalWidth;
+        if (img.naturalWidth  > 0) ex.naturalWidth  = img.naturalWidth;
         if (img.naturalHeight > 0) ex.naturalHeight = img.naturalHeight;
-        if (img.displayWidth > 0) ex.displayWidth = img.displayWidth;
+        if (img.displayWidth  > 0) ex.displayWidth  = img.displayWidth;
         if (sizeKb > 0) ex.sizeKb = sizeKb;
-        ex.hasAlt = img.hasAlt || ex.hasAlt; ex.alt = img.alt || ex.alt; ex.loading = img.loading; ex.fromApi = false;
+        ex.hasAlt  = img.hasAlt || ex.hasAlt;
+        ex.alt     = img.alt   || ex.alt;
+        ex.loading = img.loading;
+        ex.fromApi = false;
       } else {
         allImagesMap.set(key, { src: img.src, alt: img.alt, hasAlt: img.hasAlt, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, displayWidth: img.displayWidth, sizeKb, loading: img.loading, fromApi: false, productTitle: '' });
       }
     }
 
-    const needsSize = Array.from(allImagesMap.values()).filter(img => img.fromApi && img.sizeKb === 0);
+    const needsSize = Array.from(allImagesMap.values()).filter(i => i.fromApi && i.sizeKb === 0);
     if (needsSize.length > 0) {
+      log(`[Images] Fetching sizes for ${Math.min(needsSize.length, 30)} API-only images...`);
       await Promise.allSettled(needsSize.slice(0, 30).map(async (img) => {
         try {
-          const headRes = await axios.head(img.src, { timeout: 6000 });
-          const cl = parseInt(headRes.headers['content-length'] || 0, 10);
-          if (cl > 0) { img.sizeKb = +(cl / 1024).toFixed(1); const key = img.src.split('?')[0]; if (allImagesMap.has(key)) allImagesMap.get(key).sizeKb = img.sizeKb; }
+          const h = await axios.head(img.src, { timeout: 6000 });
+          const cl = parseInt(h.headers['content-length'] || 0, 10);
+          if (cl > 0) { img.sizeKb = +(cl / 1024).toFixed(1); const k = img.src.split('?')[0]; if (allImagesMap.has(k)) allImagesMap.get(k).sizeKb = img.sizeKb; }
         } catch {}
       }));
     }
@@ -766,11 +816,11 @@ app.get('/scan-images', async (req, res) => {
       if (img.sizeKb > 500) { issues.push('large-file'); largeFiles++; }
       const isModern = /\.(webp|avif)(\?|$)/i.test(img.src);
       if (!isModern && sizeBytes > 0) { issues.push('non-modern'); nonModern++; }
-      let savingsBytes = 0;
-      if (isOversized) savingsBytes += sizeBytes * 0.35;
-      if (!isModern)   savingsBytes += sizeBytes * 0.25;
-      if (img.sizeKb > 500) savingsBytes += sizeBytes * 0.40;
-      potentialSavingsBytes += savingsBytes;
+      let sv = 0;
+      if (isOversized)  sv += sizeBytes * 0.35;
+      if (!isModern)    sv += sizeBytes * 0.25;
+      if (img.sizeKb > 500) sv += sizeBytes * 0.40;
+      potentialSavingsBytes += sv;
       return { src: img.src, alt: img.alt, hasAlt: img.hasAlt, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, displayWidth: img.displayWidth, sizeKb: img.sizeKb, loading: img.loading || 'eager', isOversized, isModern, issues, fromApi: img.fromApi || false, productTitle: img.productTitle || '' };
     });
 
@@ -778,11 +828,10 @@ app.get('/scan-images', async (req, res) => {
 
     const totalImages = allImagesMap.size;
     const issuePoints = missingAlt * 3 + oversized * 5 + largeFiles * 8 + nonModern * 2;
-    const score = Math.max(0, Math.min(100, 100 - Math.round(issuePoints / Math.max(totalImages, 1) * 10)));
+    const score       = Math.max(0, Math.min(100, 100 - Math.round(issuePoints / Math.max(totalImages, 1) * 10)));
+    const result      = { score, scoreGrade: score >= 80 ? 'A' : score >= 60 ? 'B' : score >= 40 ? 'C' : 'D', totalImages, imagesWithIssues: allProcessed.filter(i => i.issues.length > 0).length, missingAlt, oversized, largeFiles, nonModern, totalSizeMb: +(totalSizeBytes / 1024 / 1024).toFixed(2), potentialSavingsKb: Math.round(potentialSavingsBytes / 1024), afterOptimizationMb: +((totalSizeBytes - potentialSavingsBytes) / 1024 / 1024).toFixed(2), apiProductCount: apiProductImages.length, images: allProcessed.slice(0, 200) };
 
-    const result = { score, scoreGrade: score >= 80 ? 'A' : score >= 60 ? 'B' : score >= 40 ? 'C' : 'D', totalImages, imagesWithIssues: allProcessed.filter(i => i.issues.length > 0).length, missingAlt, oversized, largeFiles, nonModern, totalSizeMb: +(totalSizeBytes / 1024 / 1024).toFixed(2), potentialSavingsKb: Math.round(potentialSavingsBytes / 1024), afterOptimizationMb: +((totalSizeBytes - potentialSavingsBytes) / 1024 / 1024).toFixed(2), apiProductCount: apiProductImages.length, images: allProcessed.slice(0, 200) };
-
-    log(`[Images] Done. ${totalImages} images. Score: ${score}/100.`);
+    log(`[Images] Done. ${totalImages} total images. Score: ${score}/100.`);
     sendSse(res, 'imageResult', result);
 
   } catch (error) {
@@ -815,15 +864,14 @@ app.get('/scan-ghost-code', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
 
-  const activeStoreUrl = req.query.storeUrl   || ENV_STORE_URL;
-  if (!activeStoreUrl) return sendSse(res, 'scanError', { details: 'Store URL missing.' });
-  const host   = extractHostname(activeStoreUrl);
+  const activeStoreUrl = req.query.storeUrl || ENV_STORE_URL;
+  if (!activeStoreUrl) { sendSse(res, 'scanError', { details: 'Store URL missing.' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
-  const storeData = await Store.findOne({ shop: host });
-  const activeToken = (storeData && storeData.accessToken) ? storeData.accessToken : (req.query.adminToken || ENV_ADMIN_TOKEN);
+  const host = extractHostname(activeStoreUrl);
+  const { token: activeToken } = await resolveToken(host);
 
   try {
-    if (!activeToken)    throw new Error('Admin API Token missing. Set SHOPIFY_ADMIN_TOKEN in .env or authenticate via OAuth.');
+    if (!activeToken) throw new Error('Admin Token missing. Visit /auth?shop=' + host);
 
     const shopify = axios.create({ baseURL: `https://${host}/admin/api/2025-10`, headers: { 'X-Shopify-Access-Token': activeToken, 'Content-Type': 'application/json' }, timeout: 30000 });
 
@@ -837,7 +885,6 @@ app.get('/scan-ghost-code', async (req, res) => {
       log(`[Ghost] ${installedAppNames.length} installed apps found.`);
     } catch (err) { log(`[Ghost] Warning: ${err.message}. Continuing...`); }
 
-    log('[Ghost] Fetching main theme...');
     const themeRes  = await shopify.get('/themes.json?role=main');
     const mainTheme = themeRes.data.themes?.[0];
     if (!mainTheme) throw new Error('No published theme found.');
@@ -882,7 +929,7 @@ app.get('/scan-ghost-code', async (req, res) => {
     sendSse(res, 'ghostResult', { apps: foundApps, ghostCount, totalWastedKb, theme: mainTheme.name });
 
   } catch (error) {
-    console.error('[scan-ghost-code]', error.response?.data || error.message);
+    console.error('[Ghost]', error.message);
     sendSse(res, 'scanError', { details: error.message });
   } finally {
     clearInterval(hb);
@@ -899,8 +946,7 @@ app.get('/scan-fonts', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
   const { storeUrl, storePassword } = req.query;
-
-  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl is required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
+  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
   const finalUrl = normalizeUrl(storeUrl);
   let browser, errorOccurred = false;
@@ -944,12 +990,12 @@ app.get('/scan-fonts', async (req, res) => {
 
     const issues = [], recommendations = [];
     let score = 100;
-    if (googleFonts.length > 0)               { issues.push({type:'google-fonts',severity:'warn',message:`${googleFonts.length} Google Font(s) from external CDN`}); recommendations.push('Self-host Google Fonts to eliminate external DNS lookups'); score -= 15; }
-    if (fontData.fontDisplayIssues.length > 0) { issues.push({type:'no-font-display',severity:'error',message:`${fontData.fontDisplayIssues.length} font(s) missing font-display: swap`}); recommendations.push('Add font-display: swap to all @font-face declarations'); score -= 20; }
-    if (fontData.preloadedFonts.length === 0 && uniqueFonts.length > 0) { issues.push({type:'no-preload',severity:'warn',message:'No fonts are preloaded'}); recommendations.push('Add <link rel="preload" as="font"> for primary fonts'); score -= 10; }
-    if (nonWoff2.length > 0)   { issues.push({type:'non-woff2',severity:'warn',message:`${nonWoff2.length} font(s) not in WOFF2 format`}); recommendations.push('Convert all fonts to WOFF2'); score -= 10; }
+    if (googleFonts.length > 0) { issues.push({type:'google-fonts',severity:'warn',message:`${googleFonts.length} Google Font(s) from external CDN`}); recommendations.push('Self-host Google Fonts'); score -= 15; }
+    if (fontData.fontDisplayIssues.length > 0) { issues.push({type:'no-font-display',severity:'error',message:`${fontData.fontDisplayIssues.length} font(s) missing font-display: swap`}); recommendations.push('Add font-display: swap'); score -= 20; }
+    if (fontData.preloadedFonts.length === 0 && uniqueFonts.length > 0) { issues.push({type:'no-preload',severity:'warn',message:'No fonts are preloaded'}); recommendations.push('Add <link rel="preload" as="font">'); score -= 10; }
+    if (nonWoff2.length > 0) { issues.push({type:'non-woff2',severity:'warn',message:`${nonWoff2.length} font(s) not in WOFF2`}); recommendations.push('Convert all fonts to WOFF2'); score -= 10; }
     if (heavyFonts.length > 0) { issues.push({type:'heavy-fonts',severity:'warn',message:`${heavyFonts.length} font file(s) over 60 KB`}); recommendations.push('Use Unicode-range subsetting'); score -= 5 * heavyFonts.length; }
-    if (fontData.fonts.length > 6) { issues.push({type:'too-many-fonts',severity:'info',message:`${fontData.fonts.length} font variants loaded`}); score -= 5; }
+    if (fontData.fonts.length > 6) { issues.push({type:'too-many-fonts',severity:'info',message:`${fontData.fonts.length} variants loaded`}); score -= 5; }
     score = Math.max(0, Math.min(100, score));
 
     const result = { score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D', totalFonts: fontData.fonts.length, totalFontFiles: uniqueFonts.length, googleFonts: googleFonts.length, selfHosted: uniqueFonts.filter(f => !f.isGoogleFont).length, totalSizeKb: +uniqueFonts.reduce((s, f) => s + f.sizeKb, 0).toFixed(1), preloaded: fontData.preloadedFonts.length, issues: issues.length, fonts: fontData.fonts, fontFiles: uniqueFonts, issueList: issues, recommendations };
@@ -977,8 +1023,7 @@ app.get('/scan-css', async (req, res) => {
   const hb  = startHeartbeat(res);
   const log = (msg) => { console.log(msg); sendSse(res, 'log', { message: msg }); };
   const { storeUrl, storePassword } = req.query;
-
-  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl is required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
+  if (!storeUrl) { sendSse(res, 'scanError', { details: 'storeUrl required' }); clearInterval(hb); sendSse(res, 'scanComplete', { message: 'Done' }); return res.end(); }
 
   const finalUrl = normalizeUrl(storeUrl);
   let browser, errorOccurred = false;
@@ -993,9 +1038,9 @@ app.get('/scan-css', async (req, res) => {
     await page.goto(finalUrl, { waitUntil: 'networkidle2', timeout: 90000 });
     await handleStorePassword(page, storePassword);
 
-    log('[CSS] Running coverage analysis...');
+    log('[CSS] Running coverage...');
     await page.coverage.startCSSCoverage();
-    try { await page.reload({ waitUntil: 'networkidle2', timeout: 60000 }); } catch { log('[CSS] Reload timed out, using partial data.'); }
+    try { await page.reload({ waitUntil: 'networkidle2', timeout: 60000 }); } catch { log('[CSS] Reload timed out.'); }
     const cssCoverage = await page.coverage.stopCSSCoverage();
 
     let totalBytes = 0, usedBytes = 0, totalRules = 0;
@@ -1033,10 +1078,10 @@ app.get('/scan-css', async (req, res) => {
     score = Math.max(0, Math.min(100, score));
 
     const recommendations = [];
-    if (unusedPct > 30) recommendations.push('Remove unused CSS — consider PurgeCSS or Shopify theme CSS optimization');
-    if (domAnalysis.blocking > 2) recommendations.push('Reduce render-blocking stylesheets by inlining critical CSS');
-    if (totalSizeKb > 200) recommendations.push('Minify CSS files to reduce transfer size');
-    if (fileBreakdown.some(f => f.unusedPct > 70)) recommendations.push('Some CSS files are >70% unused — consider splitting or removing them');
+    if (unusedPct > 30) recommendations.push('Remove unused CSS — consider PurgeCSS');
+    if (domAnalysis.blocking > 2) recommendations.push('Reduce render-blocking stylesheets');
+    if (totalSizeKb > 200) recommendations.push('Minify CSS files');
+    if (fileBreakdown.some(f => f.unusedPct > 70)) recommendations.push('Some files are >70% unused — consider removing');
 
     const result = { score, grade: score >= 85 ? 'A' : score >= 70 ? 'B' : score >= 50 ? 'C' : 'D', totalSizeKb, totalRules, unusedPct, potentialSaveKb: potentialSave, afterOptKb: +(usedBytes / 1024).toFixed(1), blockingSheets: domAnalysis.blocking, inlineStyles: domAnalysis.inlineStyles, inlineStyleSizeKb: domAnalysis.inlineStyleSizeKb, fileCount: fileBreakdown.length, files: fileBreakdown.slice(0, 20), recommendations };
 
@@ -1056,62 +1101,43 @@ app.get('/scan-css', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════
-// /check-password — Quick check if a store is password protected
+// /check-password
 // ════════════════════════════════════════════════════════
 app.get('/check-password', async (req, res) => {
   const { storeUrl } = req.query;
   if (!storeUrl) return res.json({ protected: false });
   try {
-    const response = await axios.get(normalizeUrl(storeUrl), {
-      maxRedirects: 5,
-      timeout: 10000,
-      validateStatus: () => true, 
-    });
-    const isProtected =
-      response.request?.path?.includes('/password') ||
-      (response.data && typeof response.data === 'string' &&
-       response.data.includes('password_form') || response.data.includes('Enter store password'));
+    const response = await axios.get(normalizeUrl(storeUrl), { maxRedirects: 5, timeout: 10000, validateStatus: () => true });
+    const isProtected = response.request?.path?.includes('/password') ||
+      (typeof response.data === 'string' && (response.data.includes('password_form') || response.data.includes('Enter store password')));
     res.json({ protected: !!isProtected });
-  } catch {
-    res.json({ protected: false });
-  }
+  } catch { res.json({ protected: false }); }
 });
 
-// ── SERVE ─────────────────────────────────────────────────
-// ── SERVE & AUTO-OAUTH REDIRECT ───────────────────────────
+// ════════════════════════════════════════════════════════
+// / — serve HTML + inject shop context
+// ════════════════════════════════════════════════════════
 app.get('/', async (req, res) => {
   try {
-    const shop = req.query.shop;
+    const shop = req.query.shop ? extractHostname(req.query.shop) : '';
 
-    // MAGICAL FIX: Agar shop parameter hai par database mein token nahi hai, 
-    // toh automatically install/auth flow trigger kar do.
     if (shop) {
-      const storeData = await Store.findOne({ shop: shop });
-      if (!storeData || !storeData.accessToken) {
-        console.log(`[System] Token missing for ${shop}. Redirecting to OAuth...`);
+      const storeData = await Store.findOne({ shop });
+      if (!storeData?.accessToken) {
+        console.log(`[Serve] No token for ${shop} → OAuth redirect`);
         return res.redirect(`/auth?shop=${shop}`);
       }
     }
 
     const htmlPath = path.join(__dirname, '../frontend', 'server.html');
-    let htmlContent = await fs.readFile(htmlPath, 'utf8');
-    
-    // In parameters ko ek script tag banakar HTML ke head mein daal do
-    const injectionScript = `
-      <script>
-        window.__SHOPIFY_CONTEXT__ = {
-          shop: "${shop || ''}"
-        };
-      </script>
-    `;
-
-    htmlContent = htmlContent.replace('</head>', `${injectionScript}\n</head>`);
-    res.send(htmlContent);
+    let html = await fs.readFile(htmlPath, 'utf8');
+    const injected = `<script>window.__SHOPIFY_CONTEXT__={shop:"${shop}"};</script>`;
+    html = html.replace('</head>', injected + '\n</head>');
+    res.send(html);
   } catch (error) {
-    console.error('[Server] Failed to serve HTML:', error);
-    res.status(500).send('Error loading the app UI.');
+    console.error('[Serve]', error);
+    res.status(500).send('Error loading the app.');
   }
 });
 
-app.listen(port, () => console.log(`[Server] App Auditor running at http://localhost:${port}`));
- 
+app.listen(port, () => console.log(`[Server] App Auditor running on port ${port}`));
