@@ -26,21 +26,29 @@ let allImageData = [];
 // Boot context — filled by /init, NEVER typed by user
 const ctx = { storeUrl: '', hasToken: false, storePassword: '' };
 
-/* ══════════════════════════════════════════════════════
-   BOOT
-   FIX 1: Read shop from __SHOPIFY_CONTEXT__ (injected by server)
-           NOT from window.location.search (unreliable in iframe)
-   FIX 2: Skip storefront password check if hasToken=true
-           Admin API scan does NOT visit storefront
-══════════════════════════════════════════════════════ */
+// ══════════════════════════════════════════════════════
+// REPLACE ONLY the boot() function in your client.js
+// with this. Everything else stays the same.
+//
+// Changes:
+// 1. After store is detected, shows "Start Scan" button
+// 2. 5-second countdown then auto-starts (user can click earlier)
+// 3. Better 401 error message pointing to the fix
+// ══════════════════════════════════════════════════════
+
 async function boot() {
   const overlay     = document.getElementById('boot-overlay');
   const statusEl    = document.getElementById('boot-status');
   const statusTxtEl = document.getElementById('boot-status-text');
   const storeNameEl = document.getElementById('boot-store-name');
+  const subTextEl   = document.getElementById('boot-sub-text');
   const pwdSection  = document.getElementById('pwd-section');
   const errSection  = document.getElementById('error-section');
   const errText     = document.getElementById('error-text');
+  const scanBtnWrap = document.getElementById('scan-btn-wrap');
+  const scanBtn     = document.getElementById('boot-scan-btn');
+  const countdown   = document.getElementById('boot-auto-countdown');
+  const countNum    = document.getElementById('countdown-num');
 
   const setStatus = (msg, cls = '') => {
     statusEl.className   = 'boot-status' + (cls ? ' ' + cls : '');
@@ -51,26 +59,20 @@ async function boot() {
     errSection.style.display = 'block';
     errText.textContent      = msg;
     statusEl.style.display   = 'none';
+    if (scanBtnWrap) scanBtnWrap.style.display = 'none';
     storeNameEl.style.color  = 'var(--danger)';
     storeNameEl.textContent  = 'Setup Required';
   };
 
   try {
-    // ── FIX 1: Read shop from server-injected context FIRST ──────
-    // __SHOPIFY_CONTEXT__ is injected into <head> by server.js '/' route
-    // This is the ONLY reliable way to get shop inside a Shopify iframe
+    // ── Step 1: Get shop context ──────────────────────
     const shopFromCtx = window.__SHOPIFY_CONTEXT__?.shop || '';
-
-    // Fallback to URL params (works when accessed directly, not via iframe)
     const urlParams   = new URLSearchParams(window.location.search);
     const shopParam   = shopFromCtx || urlParams.get('shop') || '';
 
     console.log('[Boot] shopFromCtx:', shopFromCtx, '| shopFromURL:', urlParams.get('shop'));
 
-    const initUrl = shopParam
-      ? `/init?shop=${encodeURIComponent(shopParam)}`
-      : '/init';
-
+    const initUrl  = shopParam ? `/init?shop=${encodeURIComponent(shopParam)}` : '/init';
     setStatus('Connecting to Shopify...', '');
 
     const initRes  = await fetch(initUrl);
@@ -82,20 +84,30 @@ async function boot() {
     console.log('[Boot] storeUrl:', ctx.storeUrl, '| hasToken:', ctx.hasToken, '| source:', initData.tokenSource);
 
     if (!ctx.storeUrl) {
-      showErr('Store URL not detected. Make sure the app is installed via OAuth or set SHOPIFY_STORE_URL in .env');
+      showErr(
+        'Store URL not detected.\n\n' +
+        'Fix: Set SHOPIFY_STORE_URL in your Render environment variables.\n' +
+        'Example: SHOPIFY_STORE_URL=mystore.myshopify.com'
+      );
       return;
     }
 
+    // ── Step 2: Update UI with store info ─────────────
     const displayUrl = ctx.storeUrl.replace('https://', '');
     storeNameEl.textContent = displayUrl;
     document.getElementById('topbar-store-text').textContent = displayUrl;
     document.getElementById('storeUrl').value = ctx.storeUrl;
 
-    // ── FIX 2: Only check storefront password if NO OAuth token ──
-    // hasToken=true → Admin API scan → does NOT visit storefront → no password needed
-    // hasToken=false → Puppeteer scan → visits storefront → may need password
     if (!ctx.hasToken) {
-      setStatus('Checking store access...', '');
+      setStatus('⚠️ No Admin Token — using Puppeteer scan', 'warn');
+      subTextEl.textContent = 'For accurate app data, set SHOPIFY_ADMIN_TOKEN in Render';
+    } else {
+      setStatus('✅ Admin API connected', 'green');
+      subTextEl.textContent = `Ready to scan ${displayUrl}`;
+    }
+
+    // ── Step 3: Password check (only if NO token — puppeteer scan) ──
+    if (!ctx.hasToken) {
       let isProtected = false;
       try {
         const pwdRes  = await fetch(`/check-password?storeUrl=${encodeURIComponent(ctx.storeUrl)}`);
@@ -104,7 +116,7 @@ async function boot() {
       } catch {}
 
       if (isProtected) {
-        setStatus('Password protected store detected', 'warn');
+        setStatus('🔒 Password protected store detected', 'warn');
         pwdSection.style.display = 'block';
 
         await new Promise(resolve => {
@@ -122,14 +134,37 @@ async function boot() {
           input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
         });
       }
-
-      setStatus('Using Puppeteer scan (no Admin Token)', 'warn');
-    } else {
-      setStatus('Admin API connected ✓', 'green');
     }
 
-    // ── Start scan ────────────────────────────────────────────────
-    setStatus('Starting scan...', '');
+    // ── Step 4: Show scan button + countdown ──────────
+    scanBtnWrap.style.display = 'block';
+    statusEl.style.display    = 'none'; // Hide spinner, show button instead
+
+    // Promise that resolves when user clicks OR countdown ends
+    await new Promise(resolve => {
+      let seconds = 5;
+      let resolved = false;
+
+      const doScan = () => {
+        if (resolved) return;
+        resolved = true;
+        clearInterval(timer);
+        scanBtn.disabled = true;
+        scanBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px"></span> Starting...';
+        countdown.textContent = '';
+        resolve();
+      };
+
+      scanBtn.addEventListener('click', doScan);
+
+      const timer = setInterval(() => {
+        seconds--;
+        if (countNum) countNum.textContent = seconds;
+        if (seconds <= 0) doScan();
+      }, 1000);
+    });
+
+    // ── Step 5: Start scan ────────────────────────────
     await startScan();
 
   } catch (err) {
