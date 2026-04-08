@@ -36,135 +36,141 @@ const ctx = { storeUrl: '', hasToken: false, storePassword: '' };
 // 3. Better 401 error message pointing to the fix
 // ══════════════════════════════════════════════════════
 
-async function boot() {
-  const overlay     = document.getElementById('boot-overlay');
-  const statusEl    = document.getElementById('boot-status');
-  const statusTxtEl = document.getElementById('boot-status-text');
-  const storeNameEl = document.getElementById('boot-store-name');
-  const subTextEl   = document.getElementById('boot-sub-text');
-  const pwdSection  = document.getElementById('pwd-section');
-  const errSection  = document.getElementById('error-section');
-  const errText     = document.getElementById('error-text');
-  const scanBtnWrap = document.getElementById('scan-btn-wrap');
-  const scanBtn     = document.getElementById('boot-scan-btn');
-  const countdown   = document.getElementById('boot-auto-countdown');
-  const countNum    = document.getElementById('countdown-num');
+// ══════════════════════════════════════════════════════
+// REPLACE the entire boot() function in client.js
+// with this. Everything else stays the same.
+//
+// New flow:
+// 1. Auto-detect store URL from server (/init)
+// 2. Show token input field to user
+// 3. Verify token matches this store (/verify-token)
+//    → Wrong store → clear mismatch error, ask again
+//    → Valid → start scan
+// ══════════════════════════════════════════════════════
 
-  const setStatus = (msg, cls = '') => {
-    statusEl.className   = 'boot-status' + (cls ? ' ' + cls : '');
-    statusTxtEl.textContent = msg;
+async function boot() {
+  const overlay        = document.getElementById('boot-overlay');
+  const stepDetect     = document.getElementById('boot-step-detect');
+  const stepToken      = document.getElementById('boot-step-token');
+  const storeNameEl    = document.getElementById('boot-store-name');
+  const subTextEl      = document.getElementById('boot-sub-text');
+  const detectStatus   = document.getElementById('boot-status-detect');
+  const tokenInput     = document.getElementById('token-input');
+  const tokenSubmit    = document.getElementById('token-submit');
+  const tokenStatus    = document.getElementById('token-verify-status');
+  const pwdSection     = document.getElementById('pwd-section');
+  const errSection     = document.getElementById('error-section');
+  const errText        = document.getElementById('error-text');
+
+  // ── helpers ───────────────────────────────────────
+  const setDetectStatus = (msg, cls = '') => {
+    detectStatus.className = 'boot-status' + (cls ? ' ' + cls : '');
+    detectStatus.innerHTML = cls === 'green'
+      ? `<i class="fas fa-circle-check" style="flex-shrink:0"></i><span>${msg}</span>`
+      : cls === 'warn'
+      ? `<i class="fas fa-triangle-exclamation" style="flex-shrink:0"></i><span>${msg}</span>`
+      : `<span class="spinner" style="width:10px;height:10px;border-width:1.5px;flex-shrink:0"></span><span>${msg}</span>`;
   };
 
   const showErr = (msg) => {
     errSection.style.display = 'block';
     errText.textContent      = msg;
-    statusEl.style.display   = 'none';
-    if (scanBtnWrap) scanBtnWrap.style.display = 'none';
     storeNameEl.style.color  = 'var(--danger)';
     storeNameEl.textContent  = 'Setup Required';
+    stepToken.style.display  = 'none';
+    detectStatus.style.display = 'none';
+  };
+
+  const setTokenStatus = (msg, type = 'error') => {
+    tokenStatus.style.display    = 'block';
+    tokenStatus.style.background = type === 'error' ? 'var(--danger-bg)' : type === 'loading' ? 'var(--surface2)' : 'rgba(74,222,128,.08)';
+    tokenStatus.style.border     = type === 'error' ? '1px solid rgba(244,63,94,.25)' : type === 'loading' ? '1px solid var(--border)' : '1px solid rgba(74,222,128,.25)';
+    tokenStatus.style.color      = type === 'error' ? 'var(--danger)' : type === 'loading' ? 'var(--muted)' : 'var(--green)';
+    tokenStatus.textContent      = msg;
   };
 
   try {
-    // ── Step 1: Get shop context ──────────────────────
+    // ── Step 1: Auto-detect store URL ─────────────────
     const shopFromCtx = window.__SHOPIFY_CONTEXT__?.shop || '';
     const urlParams   = new URLSearchParams(window.location.search);
     const shopParam   = shopFromCtx || urlParams.get('shop') || '';
+    const initUrl     = shopParam ? `/init?shop=${encodeURIComponent(shopParam)}` : '/init';
 
-    console.log('[Boot] shopFromCtx:', shopFromCtx, '| shopFromURL:', urlParams.get('shop'));
-
-    const initUrl  = shopParam ? `/init?shop=${encodeURIComponent(shopParam)}` : '/init';
-    setStatus('Connecting to Shopify...', '');
-
+    setDetectStatus('Connecting to Shopify...');
     const initRes  = await fetch(initUrl);
     const initData = await initRes.json();
 
-    ctx.storeUrl  = initData.storeUrl  || '';
-    ctx.hasToken  = initData.hasToken  || false;
-
-    console.log('[Boot] storeUrl:', ctx.storeUrl, '| hasToken:', ctx.hasToken, '| source:', initData.tokenSource);
+    ctx.storeUrl = initData.storeUrl || '';
 
     if (!ctx.storeUrl) {
       showErr(
         'Store URL not detected.\n\n' +
-        'Fix: Set SHOPIFY_STORE_URL in your Render environment variables.\n' +
+        'Fix: Set SHOPIFY_STORE_URL in your environment variables.\n' +
         'Example: SHOPIFY_STORE_URL=mystore.myshopify.com'
       );
       return;
     }
 
-    // ── Step 2: Update UI with store info ─────────────
+    // ── Step 2: Show store info + token input ─────────
     const displayUrl = ctx.storeUrl.replace('https://', '');
     storeNameEl.textContent = displayUrl;
     document.getElementById('topbar-store-text').textContent = displayUrl;
     document.getElementById('storeUrl').value = ctx.storeUrl;
 
-    if (!ctx.hasToken) {
-      setStatus('⚠️ No Admin Token — using Puppeteer scan', 'warn');
-      subTextEl.textContent = 'For accurate app data, set SHOPIFY_ADMIN_TOKEN in Render';
-    } else {
-      setStatus('✅ Admin API connected', 'green');
-      subTextEl.textContent = `Ready to scan ${displayUrl}`;
-    }
+    setDetectStatus(`Store detected: ${displayUrl}`, 'green');
+    subTextEl.textContent = 'Enter your Admin API token below to begin scanning.';
+    stepToken.style.display = 'block';
+    setTimeout(() => tokenInput.focus(), 100);
 
-    // ── Step 3: Password check (only if NO token — puppeteer scan) ──
-    if (!ctx.hasToken) {
-      let isProtected = false;
-      try {
-        const pwdRes  = await fetch(`/check-password?storeUrl=${encodeURIComponent(ctx.storeUrl)}`);
-        const pwdData = await pwdRes.json();
-        isProtected   = pwdData.protected || false;
-      } catch {}
-
-      if (isProtected) {
-        setStatus('🔒 Password protected store detected', 'warn');
-        pwdSection.style.display = 'block';
-
-        await new Promise(resolve => {
-          const input  = document.getElementById('pwd-input');
-          const submit = document.getElementById('pwd-submit');
-          const go = () => {
-            const pwd = input.value.trim();
-            if (!pwd) { input.style.borderColor = 'var(--danger)'; return; }
-            ctx.storePassword = pwd;
-            document.getElementById('storePassword').value = pwd;
-            pwdSection.style.display = 'none';
-            resolve();
-          };
-          submit.addEventListener('click', go);
-          input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-        });
-      }
-    }
-
-    // ── Step 4: Show scan button + countdown ──────────
-    scanBtnWrap.style.display = 'block';
-    statusEl.style.display    = 'none'; // Hide spinner, show button instead
-
-    // Promise that resolves when user clicks OR countdown ends
+    // ── Step 3: Token entry + verification ────────────
     await new Promise(resolve => {
-      let seconds = 5;
-      let resolved = false;
+      const attempt = async () => {
+        const token = tokenInput.value.trim();
+        if (!token) {
+          tokenInput.style.borderColor = 'var(--danger)';
+          tokenInput.focus();
+          return;
+        }
+        tokenInput.style.borderColor = '';
+        tokenSubmit.disabled = true;
+        tokenSubmit.innerHTML = '<span class="spinner" style="width:11px;height:11px;border-width:2px"></span>';
+        setTokenStatus('Verifying token with Shopify...', 'loading');
 
-      const doScan = () => {
-        if (resolved) return;
-        resolved = true;
-        clearInterval(timer);
-        scanBtn.disabled = true;
-        scanBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px"></span> Starting...';
-        countdown.textContent = '';
-        resolve();
+        try {
+          const verifyRes  = await fetch(`/verify-token?storeUrl=${encodeURIComponent(ctx.storeUrl)}&adminToken=${encodeURIComponent(token)}`);
+          const verifyData = await verifyRes.json();
+
+          if (!verifyData.valid) {
+            // ❌ Invalid / mismatched token — show error, let user retry
+            setTokenStatus(verifyData.error || '❌ Token verification failed.', 'error');
+            tokenSubmit.disabled = false;
+            tokenSubmit.innerHTML = '<i class="fas fa-arrow-right"></i>';
+            tokenInput.value = '';
+            tokenInput.focus();
+            return;
+          }
+
+          // ✅ Token valid and matches store
+          ctx.hasToken = true;
+          document.getElementById('adminToken').value = token;
+          const shopName = verifyData.shopName ? ` (${verifyData.shopName})` : '';
+          setTokenStatus(`✅ Verified${shopName} — starting scan...`, 'success');
+          tokenSubmit.disabled = true;
+          tokenInput.disabled  = true;
+          setTimeout(resolve, 600);
+
+        } catch (err) {
+          setTokenStatus(`❌ Network error: ${err.message}`, 'error');
+          tokenSubmit.disabled = false;
+          tokenSubmit.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        }
       };
 
-      scanBtn.addEventListener('click', doScan);
-
-      const timer = setInterval(() => {
-        seconds--;
-        if (countNum) countNum.textContent = seconds;
-        if (seconds <= 0) doScan();
-      }, 1000);
+      tokenSubmit.addEventListener('click', attempt);
+      tokenInput.addEventListener('keydown', e => { if (e.key === 'Enter') attempt(); });
     });
 
-    // ── Step 5: Start scan ────────────────────────────
+    // ── Step 4: Start scan ────────────────────────────
     await startScan();
 
   } catch (err) {
