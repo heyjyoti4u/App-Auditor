@@ -128,7 +128,34 @@ async function boot() {
       setStatus('Admin API connected ✓', 'green');
     }
 
-    // ── Start scan ────────────────────────────────────────────────
+    // ── Show "Start Scan" button, wait for click ─────────────────
+    setStatus(ctx.hasToken ? 'Admin API connected ✓ — ready to scan' : 'Ready — click to start', ctx.hasToken ? 'green' : 'warn');
+
+    const scanBtnWrap   = document.getElementById('scan-btn-wrap');
+    const scanBtn       = document.getElementById('boot-scan-btn');
+    const countdownEl   = document.getElementById('countdown-num');
+    const subText       = document.getElementById('boot-sub-text');
+
+    if (scanBtnWrap) {
+      scanBtnWrap.style.display = 'block';
+      if (subText) subText.textContent = ctx.hasToken
+        ? 'Store detected via Shopify Admin API'
+        : 'No Admin Token — will use Puppeteer scan';
+    }
+
+    // Wait for button click (no auto-start)
+    await new Promise(resolve => {
+      if (scanBtn) {
+        scanBtn.addEventListener('click', () => {
+          if (scanBtnWrap) scanBtnWrap.style.display = 'none';
+          resolve();
+        }, { once: true });
+      } else {
+        // Fallback if HTML doesn't have the button
+        resolve();
+      }
+    });
+
     setStatus('Starting scan...', '');
     await startScan();
 
