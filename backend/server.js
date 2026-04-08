@@ -1,3 +1,5 @@
+import '@shopify/shopify-api/adapters/node';
+import { shopifyApi, LATEST_API_VERSION, Session } from '@shopify/shopify-api';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,11 +12,21 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 
+
 dotenv.config();
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('[Server] MongoDB Connected'))
   .catch(err => console.error('[Server] DB Error:', err));
+
+const shopify = shopifyApi({
+  apiKey: process.env.SHOPIFY_API_KEY,
+  apiSecretKey: process.env.SHOPIFY_API_SECRET,
+  scopes: ['read_products', 'read_apps', 'read_themes'],
+  hostName: new URL(process.env.APP_URL).host,
+  apiVersion: LATEST_API_VERSION,
+  isEmbeddedApp: true,
+});
 
 const storeSchema = new mongoose.Schema({
   shop:        { type: String, required: true, unique: true },
